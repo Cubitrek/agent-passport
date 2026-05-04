@@ -1,0 +1,71 @@
+{
+  "version": "0.1.0",
+  "issuer": {
+    "domain": "acme.example",
+    "legalName": "Acme Corporation",
+    "displayName": "Acme",
+    "logo": "https://acme.example/logo.svg",
+    "signingKeyDns": "_agent-passport.acme.example",
+    "contact": {
+      "email": "agent-passport-admin@acme.example",
+      "url": "https://acme.example/legal/agent-passport"
+    }
+  },
+  "agent": {
+    "id": "acme.example:procurement-v3",
+    "displayName": "Acme Procurement Agent",
+    "purpose": "Source, evaluate, and purchase goods and services on behalf of Acme operations within the published authority envelope.",
+    "model": "claude-sonnet-4.5",
+    "endpoints": {
+      "a2a": "https://agents.acme.example/.well-known/agent.json",
+      "mcp": "https://agents.acme.example/mcp",
+      "rest": "https://agents.acme.example/api/procurement"
+    }
+  },
+  "authority": {
+    "scope": [
+      "procurement.purchase",
+      "procurement.negotiate",
+      "procurement.cancel",
+      "procurement.rfx"
+    ],
+    "spendCeiling": {
+      "amount": 50000,
+      "currency": "USD",
+      "perEngagement": true
+    },
+    "humanInLoop": {
+      "above": {
+        "amount": 10000,
+        "currency": "USD"
+      },
+      "escalation": "procurement-team@acme.example",
+      "slaHours": 4
+    },
+    "decisionAudit": "https://agents.acme.example/audit/{engagementId}",
+    "termsUrl": "https://acme.example/legal/agent-engagement-terms"
+  },
+  "counterparties": {
+    "allowlist": [
+      "globex.example",
+      "initech.example",
+      "umbrella.example"
+    ],
+    "blocklist": [],
+    "openTo": "verified-passports"
+  },
+  "compliance": {
+    "dataClassification": "confidential-business",
+    "regions": ["US", "CA", "GB", "DE"],
+    "subprocessors": ["openai.com", "anthropic.com"],
+    "humanReviewLog": true
+  },
+  "issuedAt": "2026-04-28T10:00:00Z",
+  "expiresAt": "2026-07-27T10:00:00Z",
+  "revocationListUrl": "https://acme.example/.well-known/revoked-passports.json",
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "acme-2026-q2",
+    "value": "EXAMPLE_SIGNATURE_REPLACE_WITH_REAL_BASE64URL_ED25519_SIGNATURE_OVER_CANONICAL_JSON_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  }
+}

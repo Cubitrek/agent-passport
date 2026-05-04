@@ -1,0 +1,63 @@
+{
+  "version": "0.1.0",
+  "issuer": {
+    "domain": "cubitrek.com",
+    "legalName": "Cubitrek",
+    "displayName": "Cubitrek",
+    "logo": "https://cubitrek.com/cubitrek-logo.svg",
+    "signingKeyDns": "_agent-passport.cubitrek.com",
+    "contact": {
+      "email": "hello@cubitrek.com",
+      "url": "https://cubitrek.com/contact"
+    }
+  },
+  "agent": {
+    "id": "cubitrek.com:hire-router-v1",
+    "displayName": "Cubitrek Humans-for-Agents Router",
+    "purpose": "Route inbound agent engagement requests to the correct senior human role on the Cubitrek roster, within the published authority envelope and the six-hour match SLA.",
+    "model": "claude-sonnet-4.5",
+    "endpoints": {
+      "mcp": "https://mcp.cubitrek.com",
+      "rest": "https://cubitrek.com/api/hire"
+    }
+  },
+  "authority": {
+    "scope": [
+      "staffing.match",
+      "staffing.quote",
+      "staffing.book"
+    ],
+    "spendCeiling": {
+      "amount": 9000,
+      "currency": "USD",
+      "perEngagement": true
+    },
+    "humanInLoop": {
+      "above": {
+        "amount": 240,
+        "currency": "USD"
+      },
+      "escalation": "hello@cubitrek.com",
+      "slaHours": 6
+    },
+    "decisionAudit": "https://cubitrek.com/api/hire/{engagementId}",
+    "termsUrl": "https://cubitrek.com/services/humans-for-agents"
+  },
+  "counterparties": {
+    "openTo": "any"
+  },
+  "compliance": {
+    "dataClassification": "confidential-business",
+    "regions": ["US", "GB", "DE", "FR", "ES", "IT", "NL", "SE", "PK"],
+    "subprocessors": ["anthropic.com", "openai.com", "leadconnectorhq.com"],
+    "humanReviewLog": true
+  },
+  "issuedAt": "2026-04-28T00:00:00Z",
+  "expiresAt": "2026-07-27T00:00:00Z",
+  "revocationListUrl": "https://cubitrek.com/.well-known/revoked-passports.json",
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "cubitrek-2026-q2",
+    "value": "PLACEHOLDER_SIGNATURE_TO_BE_REPLACED_WHEN_CUBITREK_PUBLISHES_LIVE_PASSPORT_AT_WELL_KNOWN_AGENT_PASSPORT_JSON_AAAAAAAAAAAAAA"
+  }
+}

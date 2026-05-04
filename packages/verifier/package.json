@@ -1,0 +1,56 @@
+{
+  "name": "@cubitrek/agent-passport-verifier",
+  "version": "0.1.0",
+  "description": "Reference verifier for the Agent Passport spec, v0.1. Validates schema, fetches the issuer's DNS-anchored Ed25519 public key, verifies the canonical-JSON signature, and checks expiry and revocation.",
+  "license": "MIT",
+  "homepage": "https://github.com/cubitrek/agent-passport",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cubitrek/agent-passport.git",
+    "directory": "packages/verifier"
+  },
+  "author": "Cubitrek <hello@cubitrek.com> (https://cubitrek.com)",
+  "keywords": [
+    "agent-passport",
+    "agent",
+    "ai-agent",
+    "a2a",
+    "mcp",
+    "trust",
+    "ed25519",
+    "well-known",
+    "agentic"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema": "./dist/schema.js",
+    "./canonical": "./dist/canonical.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "ajv": "^8.17.0",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^20.16.0"
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "version": "0.1.0",
+  "issuer": {
+    "domain": "globex.example",
+    "legalName": "Globex Software, Inc.",
+    "displayName": "Globex",
+    "logo": "https://globex.example/static/logo.svg",
+    "signingKeyDns": "_agent-passport.globex.example",
+    "contact": {
+      "email": "trust@globex.example"
+    }
+  },
+  "agent": {
+    "id": "globex.example:sales-v2",
+    "displayName": "Globex Sales Agent",
+    "purpose": "Qualify inbound buyer interest, generate proposals, negotiate within published margins, and book qualified humans for any commitment that requires signature.",
+    "model": "gpt-5",
+    "endpoints": {
+      "a2a": "https://agents.globex.example/.well-known/agent.json",
+      "rest": "https://agents.globex.example/api/sales"
+    }
+  },
+  "authority": {
+    "scope": [
+      "sales.quote",
+      "sales.negotiate",
+      "sales.discount",
+      "sales.book-meeting"
+    ],
+    "spendCeiling": {
+      "amount": 0,
+      "currency": "USD",
+      "perEngagement": true
+    },
+    "humanInLoop": {
+      "above": {
+        "amount": 0,
+        "currency": "USD"
+      },
+      "escalation": "deal-desk@globex.example",
+      "slaHours": 2
+    },
+    "decisionAudit": "https://agents.globex.example/audit/{engagementId}",
+    "termsUrl": "https://globex.example/legal/agent-msa"
+  },
+  "counterparties": {
+    "openTo": "verified-passports"
+  },
+  "compliance": {
+    "dataClassification": "confidential-business",
+    "regions": ["US", "EU"],
+    "subprocessors": ["openai.com", "salesforce.com"],
+    "humanReviewLog": true
+  },
+  "issuedAt": "2026-04-28T08:00:00Z",
+  "expiresAt": "2026-07-27T08:00:00Z",
+  "revocationListUrl": "https://globex.example/.well-known/revoked-passports.json",
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "globex-2026-q2",
+    "value": "EXAMPLE_SIGNATURE_REPLACE_WITH_REAL_BASE64URL_ED25519_SIGNATURE_OVER_CANONICAL_JSON_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+  }
+}

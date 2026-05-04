@@ -1,0 +1,39 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/verifier
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: packages/verifier/package-lock.json
+      - run: npm ci || npm install
+      - run: npm run build
+      - run: npm test
+
+  schema-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Confirm verifier schema-data.ts matches canonical schema
+        run: |
+          node scripts/sync-schema.mjs
+          if ! git diff --quiet packages/verifier/src/schema-data.ts; then
+            echo "::error::schema-data.ts is out of sync. Run: node scripts/sync-schema.mjs"
+            git --no-pager diff packages/verifier/src/schema-data.ts
+            exit 1
+          fi
