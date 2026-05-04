@@ -1,6 +1,6 @@
 {
   "name": "@cubitrek/agent-passport-verifier",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reference verifier for the Agent Passport spec, v0.1. Validates schema, fetches the issuer's DNS-anchored Ed25519 public key, verifies the canonical-JSON signature, and checks expiry and revocation.",
   "license": "MIT",
   "homepage": "https://github.com/cubitrek/agent-passport",

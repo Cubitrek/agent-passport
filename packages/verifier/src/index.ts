@@ -207,7 +207,14 @@ async function verifyEd25519(
   const sig = base64UrlDecode(passport.signature.value);
   if (sig.length === 0) return false;
   try {
-    const pkBytes = base64ToBytes(publicKeyB64);
+    // Accept both base64 and base64url. The DNS TXT record per the v0.1
+    // spec carries `pk` as base64url (so it round-trips safely through
+    // BIND files and DoH JSON), but a passport author may pass a
+    // base64-encoded SPKI through the function-resolver strategy.
+    // `base64UrlDecode` is a superset: it normalises `-`→`+` and `_`→`/`,
+    // then runs standard base64 decoding, so passing standard base64
+    // through it is a no-op.
+    const pkBytes = base64UrlDecode(publicKeyB64);
     const key = await importEd25519PublicKey(pkBytes);
     // Cast to BufferSource: TS 5.7 distinguishes Uint8Array<ArrayBuffer> vs
     // <ArrayBufferLike>, but at runtime any TypedArray over an ArrayBuffer
