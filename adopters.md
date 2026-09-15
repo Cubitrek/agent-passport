@@ -6,7 +6,7 @@ To add yourself, send a PR appending one row to the table below. Once the mainta
 
 | Domain | Agent | Issued | Status |
 | --- | --- | --- | --- |
-| cubitrek.com | Cubitrek Humans-for-Agents Router | 2026-04-28 | Expired 2026-07-27, re-issue pending |
+| cubitrek.com | Cubitrek Humans-for-Agents Router | 2026-09-15 | Pending: re-issued with key cubitrek-2026-q3, awaiting its DNS record |
 
 ## Verification badge
 

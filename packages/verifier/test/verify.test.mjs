@@ -275,9 +275,9 @@ test("Cubitrek's published passport verifies against its DNS key while it was va
   // _agent-passport.cubitrek.com; update both together when the example is re-issued.
   const result = await verifyAgentPassport({
     passport: loadExample("cubitrek.agent-passport.json"),
-    resolveSignerPublicKey: { publicKeyB64: "M-_7mbiIxdhKF3h-xbqWjorcUfXhcuo_bqoLkzlADnA" },
+    resolveSignerPublicKey: { publicKeyB64: "2ib2Yj3Xd1dzjWXBiz_Hu98_DAsLYEabhoSYgObSDgs" },
     checkRevocation: false,
-    now: () => new Date("2026-05-01T00:00:00Z"),
+    now: () => new Date("2026-09-20T00:00:00Z"),
   });
   assert.equal(result.ok, true);
 });
