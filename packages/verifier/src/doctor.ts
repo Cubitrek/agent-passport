@@ -349,10 +349,11 @@ async function linkChecks(passport: AgentPassport, timeoutMs: number): Promise<H
 }
 
 function humanSeconds(seconds: number): string {
-  if (seconds >= 86_400) return `${Math.round(seconds / 86_400)} days`;
-  if (seconds >= 3_600) return `${Math.round(seconds / 3_600)} hours`;
-  if (seconds >= 60) return `${Math.round(seconds / 60)} minutes`;
-  return `${seconds} seconds`;
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  if (seconds >= 86_400) return unit(Math.round(seconds / 86_400), "day");
+  if (seconds >= 3_600) return unit(Math.round(seconds / 3_600), "hour");
+  if (seconds >= 60) return unit(Math.round(seconds / 60), "minute");
+  return unit(seconds, "second");
 }
 
 function message(err: unknown): string {

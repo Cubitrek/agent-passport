@@ -411,3 +411,11 @@ test("MCP server negotiates, lists four tools, drafts offline and rejects unknow
 
   assert.equal(replies.get(4).error.code, -32602);
 });
+
+test("doctor describes cache lifetimes with correct plurals", async () => {
+  await publishAcme({
+    passportHeaders: { "content-type": "application/json", "access-control-allow-origin": "*", "cache-control": "max-age=86400" },
+  });
+  const result = await diagnoseAgentPassport({ domain: "acme.example", now: () => new Date("2026-06-01T00:00:00Z") });
+  assert.equal(result.checks.find((c) => c.id === "http.cache").detail, "max-age=86400 (1 day)");
+});
