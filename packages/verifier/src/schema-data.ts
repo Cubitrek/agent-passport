@@ -143,7 +143,8 @@ export const schema = {
         },
         "decisionAudit": {
           "type": "string",
-          "description": "URL template that resolves to a signed audit transcript. Must contain the literal substring {engagementId}."
+          "pattern": "\\{engagementId\\}",
+          "description": "URL template that resolves to the audit transcript for an engagement. Must contain the literal substring {engagementId}."
         },
         "termsUrl": { "type": "string", "format": "uri" }
       }

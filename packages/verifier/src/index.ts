@@ -16,6 +16,25 @@
 export { validate } from "./schema.js";
 export { canonicalize, canonicalBytes } from "./canonical.js";
 export { fetchSigningKeys } from "./dns.js";
+export type { SigningKeyLookup, SigningKeyRecord } from "./dns.js";
+export { dnsTxtRecord, signAgentPassport } from "./sign.js";
+export { authorize } from "./authorize.js";
+export type {
+  AuthorizationRequest,
+  AuthorizationResult,
+  DataClassification,
+  Decision,
+} from "./authorize.js";
+export { daysUntilExpiry, describePassport } from "./describe.js";
+export { defaultKeyId, draftAgentPassport, guessEndpointType, isoSeconds } from "./draft.js";
+export type { EndpointType, PassportDraftInput } from "./draft.js";
+export { diagnoseAgentPassport } from "./doctor.js";
+export type {
+  CheckStatus,
+  DiagnoseOptions,
+  DiagnoseResult,
+  HealthCheck,
+} from "./doctor.js";
 export type * from "./types.js";
 
 import type {
@@ -27,49 +46,75 @@ import type {
 import { validate } from "./schema.js";
 import { canonicalBytes } from "./canonical.js";
 import { fetchSigningKeys } from "./dns.js";
+import { base64ToBytes } from "./encoding.js";
+import { BodyTooLargeError, readJsonCapped, withTimeout } from "./http.js";
 
 const WELL_KNOWN_PATH = "/.well-known/agent-passport.json";
+const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_PASSPORT_BYTES = 256 * 1024;
+const MAX_REVOCATION_LIST_BYTES = 1024 * 1024;
+const RECOMMENDED_MAX_LIFETIME_MS = 90 * 24 * 60 * 60 * 1000;
+const HOSTNAME =
+  /^(?=.{1,253}$)_?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\._?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
 export async function verifyAgentPassport(
   opts: VerifyOptions,
 ): Promise<VerifyResult> {
   const errors: VerificationError[] = [];
   const warnings: VerificationError[] = [];
-  const now = (opts.now ?? (() => new Date()))();
+  const now = (opts.now ?? (() => new Date()))().getTime();
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  let fetchHost: string | undefined;
+  if (opts.domain !== undefined) {
+    const host = normalizeHost(opts.domain);
+    if (!host) {
+      return failure({
+        code: "args.invalid-domain",
+        message: `domain must be a bare hostname, got "${opts.domain}"`,
+      });
+    }
+    fetchHost = host;
+  }
 
   // 1. Get the passport JSON.
   let passportJson: unknown;
   if (opts.passport !== undefined) {
     passportJson = opts.passport;
-  } else if (opts.domain) {
-    const url = `https://${opts.domain}${WELL_KNOWN_PATH}`;
+  } else if (fetchHost) {
+    const url = `https://${fetchHost}${WELL_KNOWN_PATH}`;
     try {
-      const res = await fetch(url, { signal: opts.signal });
-      if (!res.ok) {
-        return failure(errors, [
-          {
-            code: "fetch.non-2xx",
-            message: `${url} returned HTTP ${res.status}`,
-          },
-        ]);
+      const res = await fetch(url, {
+        headers: { accept: "application/json" },
+        redirect: "manual",
+        signal: withTimeout(opts.signal, timeoutMs),
+      });
+      if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+        return failure({
+          code: "fetch.redirect",
+          message: `${url} redirected. The passport must be served directly by the issuer host.`,
+          hint: res.headers.get("location") ?? undefined,
+        });
       }
-      passportJson = await res.json();
+      if (!res.ok) {
+        return failure({
+          code: "fetch.non-2xx",
+          message: `${url} returned HTTP ${res.status}`,
+        });
+      }
+      passportJson = await readJsonCapped(res, MAX_PASSPORT_BYTES);
     } catch (err) {
-      return failure(errors, [
-        {
-          code: "fetch.failed",
-          message: `Failed to fetch ${url}`,
-          hint: err instanceof Error ? err.message : String(err),
-        },
-      ]);
+      return failure({
+        code: err instanceof BodyTooLargeError ? "fetch.too-large" : "fetch.failed",
+        message: `Failed to fetch ${url}`,
+        hint: errorMessage(err),
+      });
     }
   } else {
-    return failure(errors, [
-      {
-        code: "args.missing",
-        message: "Either domain or passport must be supplied",
-      },
-    ]);
+    return failure({
+      code: "args.missing",
+      message: "Either domain or passport must be supplied",
+    });
   }
 
   // 2. Schema validate.
@@ -78,75 +123,127 @@ export async function verifyAgentPassport(
     return { ok: false, errors: v.errors, warnings };
   }
   const passport: AgentPassport = v.passport;
+  const issuerHost = normalizeHost(passport.issuer.domain);
 
   // 3. Issuer domain must match the host we fetched from, if we fetched.
-  if (opts.domain && opts.domain !== passport.issuer.domain) {
+  if (fetchHost && fetchHost !== issuerHost) {
     errors.push({
       code: "issuer.domain-mismatch",
-      message: `Passport issuer.domain "${passport.issuer.domain}" does not match fetch host "${opts.domain}".`,
+      message: `Passport issuer.domain "${passport.issuer.domain}" does not match fetch host "${fetchHost}".`,
     });
   }
 
-  // 4. Validity window.
-  const issuedAt = new Date(passport.issuedAt);
-  const expiresAt = new Date(passport.expiresAt);
-  if (issuedAt > now) {
+  // 4. The signing key must sit inside the issuer's own DNS zone. Without this
+  //    anyone can name any issuer, publish a key in a zone they control, and sign.
+  const keyHost = normalizeHost(passport.issuer.signingKeyDns);
+  const keyInIssuerZone =
+    issuerHost !== null &&
+    keyHost !== null &&
+    (keyHost === issuerHost || keyHost.endsWith(`.${issuerHost}`));
+  if (!keyInIssuerZone) {
     errors.push({
-      code: "time.issued-in-future",
-      message: `Passport issuedAt is in the future (${passport.issuedAt}).`,
-    });
-  }
-  if (expiresAt <= now) {
-    errors.push({
-      code: "time.expired",
-      message: `Passport expired at ${passport.expiresAt}.`,
+      code: "issuer.signing-key-outside-domain",
+      message: `issuer.signingKeyDns "${passport.issuer.signingKeyDns}" is not inside issuer.domain "${passport.issuer.domain}".`,
+      hint: `Publish the key at _agent-passport.${passport.issuer.domain}`,
     });
   }
 
-  // 5. Resolve the signer's public key.
-  const pk = await resolvePublicKey(passport, opts);
-  if (typeof pk === "string") {
-    // 6. Verify the signature.
-    const sigOk = await verifyEd25519(passport, pk);
-    if (!sigOk) {
+  // 5. Validity window.
+  const issuedAt = Date.parse(passport.issuedAt);
+  const expiresAt = Date.parse(passport.expiresAt);
+  if (Number.isNaN(issuedAt) || Number.isNaN(expiresAt)) {
+    errors.push({
+      code: "time.unparseable",
+      message: "Passport issuedAt or expiresAt cannot be parsed as a date.",
+    });
+  } else {
+    if (issuedAt > now) {
+      errors.push({
+        code: "time.issued-in-future",
+        message: `Passport issuedAt is in the future (${passport.issuedAt}).`,
+      });
+    }
+    if (expiresAt <= now) {
+      errors.push({
+        code: "time.expired",
+        message: `Passport expired at ${passport.expiresAt}.`,
+      });
+    }
+    if (expiresAt <= issuedAt) {
+      errors.push({
+        code: "time.window-inverted",
+        message: "Passport expiresAt is not after issuedAt.",
+      });
+    } else if (expiresAt - issuedAt > RECOMMENDED_MAX_LIFETIME_MS) {
+      warnings.push({
+        code: "time.lifetime-exceeds-recommended",
+        message: "Passport lifetime exceeds the recommended 90 days (spec §4.8).",
+      });
+    }
+  }
+
+  // 6. Authority envelope consistency. Warnings, because the schema cannot express these.
+  const { spendCeiling, humanInLoop } = passport.authority;
+  if (humanInLoop.above.currency !== spendCeiling.currency) {
+    warnings.push({
+      code: "authority.currency-mismatch",
+      message: `humanInLoop.above is in ${humanInLoop.above.currency} but spendCeiling is in ${spendCeiling.currency}, so the thresholds cannot be compared.`,
+    });
+  } else if (humanInLoop.above.amount > spendCeiling.amount) {
+    warnings.push({
+      code: "authority.hil-above-ceiling",
+      message: "humanInLoop.above exceeds spendCeiling, so no autonomous commitment ever reaches a human.",
+    });
+  }
+
+  // 7. Resolve the signer's key and verify the signature. Skipped when the key
+  //    name is outside the issuer zone, so we never query a zone the issuer
+  //    does not control.
+  if (keyInIssuerZone) {
+    const pk = await resolvePublicKey(passport, opts, timeoutMs, warnings);
+    if (typeof pk !== "string") {
+      errors.push(...pk);
+    } else if (!(await verifyEd25519(passport, pk))) {
       errors.push({
         code: "signature.invalid",
         message: "Ed25519 signature does not verify against the resolved public key.",
         hint: "Confirm canonical-JSON serialisation matches the issuer's. Field order must be sorted; signature.value must be empty during signing.",
       });
     }
-  } else {
-    errors.push(...pk);
   }
 
-  // 7. Optional: revocation check.
-  const checkRevocation = opts.checkRevocation !== false;
-  if (
-    checkRevocation &&
-    passport.revocationListUrl &&
-    !errors.some((e) => e.code === "signature.invalid")
-  ) {
+  // 8. Revocation, once every other check has passed.
+  if (errors.length === 0 && opts.checkRevocation !== false && passport.revocationListUrl) {
+    const report = opts.revocationFailure === "error" ? errors : warnings;
     try {
-      const r = await fetch(passport.revocationListUrl, { signal: opts.signal });
-      if (r.ok) {
-        const list = (await r.json()) as unknown;
-        if (Array.isArray(list) && list.includes(passport.agent.id)) {
+      const res = await fetch(passport.revocationListUrl, {
+        headers: { accept: "application/json" },
+        signal: withTimeout(opts.signal, timeoutMs),
+      });
+      if (!res.ok) {
+        report.push({
+          code: "revocation.fetch-non-2xx",
+          message: `revocationListUrl returned HTTP ${res.status}`,
+        });
+      } else {
+        const list = await readJsonCapped(res, MAX_REVOCATION_LIST_BYTES);
+        if (!Array.isArray(list)) {
+          report.push({
+            code: "revocation.malformed",
+            message: "revocationListUrl did not return a JSON array",
+          });
+        } else if (list.includes(passport.agent.id)) {
           errors.push({
             code: "revocation.revoked",
             message: `Passport agent.id ${passport.agent.id} is on the issuer's revocation list.`,
           });
         }
-      } else {
-        warnings.push({
-          code: "revocation.fetch-non-2xx",
-          message: `revocationListUrl returned ${r.status}; skipping`,
-        });
       }
     } catch (err) {
-      warnings.push({
+      report.push({
         code: "revocation.fetch-failed",
-        message: "Failed to fetch revocationListUrl; skipping",
-        hint: err instanceof Error ? err.message : String(err),
+        message: "Failed to fetch revocationListUrl",
+        hint: errorMessage(err),
       });
     }
   }
@@ -158,6 +255,8 @@ export async function verifyAgentPassport(
 async function resolvePublicKey(
   passport: AgentPassport,
   opts: VerifyOptions,
+  timeoutMs: number,
+  warnings: VerificationError[],
 ): Promise<string | VerificationError[]> {
   const strategy = opts.resolveSignerPublicKey ?? "dns";
   if (typeof strategy === "object" && "publicKeyB64" in strategy) {
@@ -180,12 +279,13 @@ async function resolvePublicKey(
     return k;
   }
   // strategy === "dns"
-  const { records, errors } = await fetchSigningKeys({
+  const lookup = await fetchSigningKeys({
     signingKeyDns: passport.issuer.signingKeyDns,
     signal: opts.signal,
+    timeoutMs,
   });
-  if (errors.length) return errors;
-  const match = records.find(
+  if (lookup.errors.length) return lookup.errors;
+  const match = lookup.records.find(
     (r) => r.kid === passport.signature.keyId && r.alg === passport.signature.alg,
   );
   if (!match) {
@@ -196,6 +296,13 @@ async function resolvePublicKey(
       },
     ];
   }
+  if (!lookup.authenticated) {
+    warnings.push({
+      code: "dns.unauthenticated",
+      message: `The DNS answer for ${passport.issuer.signingKeyDns} was not DNSSEC-validated.`,
+      hint: "Without DNSSEC the key is only as trustworthy as the resolver's path to the issuer's nameservers. Issuers should enable DNSSEC.",
+    });
+  }
   return match.pk;
 }
 
@@ -203,29 +310,20 @@ async function verifyEd25519(
   passport: AgentPassport,
   publicKeyB64: string,
 ): Promise<boolean> {
-  const bytes = canonicalBytes(passport);
-  const sig = base64UrlDecode(passport.signature.value);
-  if (sig.length === 0) return false;
   try {
-    // Accept both base64 and base64url. The DNS TXT record per the v0.1
-    // spec carries `pk` as base64url (so it round-trips safely through
-    // BIND files and DoH JSON), but a passport author may pass a
-    // base64-encoded SPKI through the function-resolver strategy.
-    // `base64UrlDecode` is a superset: it normalises `-`→`+` and `_`→`/`,
-    // then runs standard base64 decoding, so passing standard base64
-    // through it is a no-op.
-    const pkBytes = base64UrlDecode(publicKeyB64);
-    const key = await importEd25519PublicKey(pkBytes);
+    // Signatures and DNS keys are base64url per the spec; function resolvers
+    // may return standard base64. base64ToBytes accepts both and throws on
+    // anything else, which lands in the catch below.
+    const sig = base64ToBytes(passport.signature.value);
+    if (sig.length !== 64) return false;
+    const key = await importEd25519PublicKey(base64ToBytes(publicKeyB64));
     // Cast to BufferSource: TS 5.7 distinguishes Uint8Array<ArrayBuffer> vs
-    // <ArrayBufferLike>, but at runtime any TypedArray over an ArrayBuffer
-    // satisfies the WebCrypto API. The arrays here are always backed by
-    // fresh ArrayBuffers (canonicalBytes via TextEncoder, base64UrlDecode
-    // via new Uint8Array(...)).
+    // <ArrayBufferLike>, but both arrays here are backed by fresh ArrayBuffers.
     return await crypto.subtle.verify(
       "Ed25519",
       key,
       sig as unknown as BufferSource,
-      bytes as unknown as BufferSource,
+      canonicalBytes(passport) as unknown as BufferSource,
     );
   } catch {
     return false;
@@ -233,8 +331,8 @@ async function verifyEd25519(
 }
 
 async function importEd25519PublicKey(bytes: Uint8Array): Promise<CryptoKey> {
-  // Accept either a raw 32-byte Ed25519 public key or a DER SubjectPublicKeyInfo.
-  // We try SPKI first (more common in production), fall back to raw.
+  // A 32-byte value is a raw Ed25519 key and gets wrapped as SPKI; anything
+  // else is treated as DER SubjectPublicKeyInfo.
   const data = bytes.length === 32 ? wrapEd25519Raw(bytes) : bytes;
   return crypto.subtle.importKey(
     "spki",
@@ -257,26 +355,15 @@ function wrapEd25519Raw(raw: Uint8Array): Uint8Array {
   return out;
 }
 
-function base64UrlDecode(s: string): Uint8Array {
-  const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
-  const b64 = (s + pad).replace(/-/g, "+").replace(/_/g, "/");
-  return base64ToBytes(b64);
+function normalizeHost(value: string): string | null {
+  const host = value.trim().toLowerCase().replace(/\.$/, "");
+  return HOSTNAME.test(host) ? host : null;
 }
 
-function base64ToBytes(s: string): Uint8Array {
-  const cleaned = s.replace(/\s+/g, "");
-  if (typeof atob === "function") {
-    const bin = atob(cleaned);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  return Uint8Array.from(Buffer.from(cleaned, "base64"));
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
-function failure(
-  errors: VerificationError[],
-  added: VerificationError[],
-): VerifyResult {
-  return { ok: false, errors: [...errors, ...added], warnings: [] };
+function failure(error: VerificationError): VerifyResult {
+  return { ok: false, errors: [error], warnings: [] };
 }

@@ -1,0 +1,48 @@
+name: Agent Passport health check
+description: Check a published Agent Passport (signature, DNS key, expiry runway, caching, revocation list, links) and fail the job when it is broken.
+author: Cubitrek
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  domain:
+    description: Domain that publishes /.well-known/agent-passport.json
+    required: true
+  warn-days:
+    description: Warn when the passport expires within this many days
+    required: false
+    default: "14"
+  fail-on-warn:
+    description: Also fail the job on warnings
+    required: false
+    default: "false"
+
+outputs:
+  ok:
+    description: "true when no check failed"
+    value: ${{ steps.doctor.outputs.ok }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+
+    - name: Build the verifier
+      shell: bash
+      working-directory: ${{ github.action_path }}/packages/verifier
+      run: npm ci --no-audit --no-fund && npm run build
+
+    - id: doctor
+      name: Run agent-passport doctor
+      shell: bash
+      env:
+        DOMAIN: ${{ inputs.domain }}
+        WARN_DAYS: ${{ inputs.warn-days }}
+        FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        node "$ACTION_PATH/packages/verifier/bin/agent-passport.mjs" doctor "$DOMAIN" --warn-days "$WARN_DAYS" --json > "$RUNNER_TEMP/agent-passport-doctor.json" || true
+        node "$ACTION_PATH/scripts/action-summary.mjs" "$RUNNER_TEMP/agent-passport-doctor.json"

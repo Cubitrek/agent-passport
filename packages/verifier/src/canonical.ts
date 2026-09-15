@@ -7,6 +7,8 @@
  *      newline, UTF-8.
  *   3. Sign the resulting bytes with Ed25519.
  *
+ * Keys sort by UTF-16 code unit and scalars are written as JSON.stringify
+ * writes them, which matches RFC 8785 (JCS) for well-formed passports.
  * This module produces the canonical bytes for both signers and verifiers.
  */
 
@@ -43,19 +45,8 @@ function stringifySortedKeys(value: unknown): string {
 }
 
 /**
- * Produce the canonical UTF-8 bytes that the issuer signs and the verifier
- * checks against.
- */
-export function canonicalBytes(passport: AgentPassport): Uint8Array {
-  const cloned = structuredClone(passport) as AgentPassport;
-  cloned.signature = { ...cloned.signature, value: "" };
-  const text = stringifySortedKeys(cloned);
-  return new TextEncoder().encode(text);
-}
-
-/**
- * Useful for issuers building a passport: returns the bytes plus the
- * intended canonical string, so they can sign and write the result back.
+ * The canonical string and UTF-8 bytes for a passport, with signature.value
+ * emptied. The input is not mutated.
  */
 export function canonicalize(passport: AgentPassport): {
   bytes: Uint8Array;
@@ -65,4 +56,12 @@ export function canonicalize(passport: AgentPassport): {
   cloned.signature = { ...cloned.signature, value: "" };
   const text = stringifySortedKeys(cloned);
   return { text, bytes: new TextEncoder().encode(text) };
+}
+
+/**
+ * Produce the canonical UTF-8 bytes that the issuer signs and the verifier
+ * checks against.
+ */
+export function canonicalBytes(passport: AgentPassport): Uint8Array {
+  return canonicalize(passport).bytes;
 }

@@ -16,7 +16,7 @@
     "purpose": "Qualify inbound buyer interest, generate proposals, negotiate within published margins, and book qualified humans for any commitment that requires signature.",
     "model": "gpt-5",
     "endpoints": {
-      "a2a": "https://agents.globex.example/.well-known/agent.json",
+      "a2a": "https://agents.globex.example/.well-known/agent-card.json",
       "rest": "https://agents.globex.example/api/sales"
     }
   },
