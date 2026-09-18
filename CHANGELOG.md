@@ -17,12 +17,13 @@ Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport-verifier`.
 - `agent-passport renew`: re-date and re-sign a passport in place, and confirm DNS carries the key.
 - `agent-passport doctor` and `diagnoseAgentPassport()`: up to 21 health checks on a published passport (delivery, CORS, caching, DNS key, DNSSEC, signature, expiry runway, lifetime, thresholds, revocation list, linked URLs), each problem with a fix.
 - `agent-passport authorize` and `authorize()`: allow, escalate or deny one request against the authority envelope (scope, spend ceiling and human threshold, cumulative ceilings, counterparty rules, regions, data classification), with the issuer's human contact on anything but allow. Exit codes 0, 2 and 1.
+- Execution binding. `authorize()` returns a `binding` with every decision: a SHA-256 digest of the exact request (scope, amount, counterparty, and the concrete tool, target and arguments) and of the passport identity, plus a nonce and an expiry (60 seconds by default, the issuer's response window for an escalation). `checkExecution()` runs immediately before the side effect and refuses if anything changed, the decision expired, it was a deny, an escalation lacks a person's confirmation, or (with a nonce store) it was already used. `memoryNonceStore()` gives single use within one process. `authorize()` is now async. The CLI takes `--tool`, `--target`, `--args` and `--ttl`; the MCP tool takes `tool`, `target` and `arguments`.
 - `describePassport()`: a plain-English reading of a passport, now the default output of `verify`.
 - `draftAgentPassport()`: a complete, schema-valid passport from plain answers.
 - `agent-passport mcp`: an MCP server over stdio with four tools (`verify_agent_passport`, `authorize_agent_action`, `check_agent_passport_health`, `draft_agent_passport`). No dependencies; tested against the official MCP SDK client 1.30.0. It never handles private keys.
 - `--public-key` on `verify` and `authorize` to pin an issuer key instead of using DNS.
 - A GitHub Action (`action.yml`) that runs the health check on a schedule and writes a job summary.
-- Spec: §7 step 10 now defines the allow, escalate and deny outcomes; new proposal for third-party attestations (`spec/proposals/attestations.md`).
+- Spec: §7 step 10 now defines the allow, escalate and deny outcomes and must hold at the moment of the side effect; threat model §1.9 covers action substitution; new proposals for third-party attestations (`spec/proposals/attestations.md`) and signed decision receipts (`spec/proposals/execution-binding.md`).
 - `revocationFailure: "error"` to fail closed when the revocation list cannot be read.
 - Warnings: `dns.unauthenticated` (key lookup not DNSSEC-validated), `time.lifetime-exceeds-recommended` (over 90 days), `authority.hil-above-ceiling`, `authority.currency-mismatch`.
 - End-to-end tests for signing, tampering, key-zone forgery, expiry, revocation, redirects, oversized responses and the CLI.
@@ -31,6 +32,7 @@ Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport-verifier`.
 ### Changed
 
 - Domain comparison ignores case and a trailing dot.
+- Canonical JSON, used for signing and for request digests, refuses values with no unambiguous JSON form (Dates, NaN, bigints) instead of writing them as `{}` or `null`.
 - Schema: `authority.decisionAudit` must contain `{engagementId}`, as the spec already required.
 - DNS-over-HTTPS answers with a failing RCODE are reported as `dns.rcode`.
 - The revocation list is only fetched once every other check has passed.

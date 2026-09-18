@@ -2,6 +2,13 @@
  * Turn a verified passport into a decision about one inbound request:
  * allow, escalate to a human, or deny. This is spec §7 step 10 as code, so
  * every receiver applies the authority envelope the same way.
+ *
+ * Every decision is bound to the exact request it evaluated: a SHA-256
+ * digest over the scope, amount, counterparty details and the concrete
+ * action (tool, target, arguments), with a single-use nonce and an expiry.
+ * The component that performs the side effect calls checkExecution() with
+ * the final values immediately before acting, so an action whose target or
+ * arguments changed after authorization is refused.
  */
 
 import type {
@@ -10,8 +17,19 @@ import type {
   VerificationError,
   VerifyResult,
 } from "./types.js";
+import { canonicalJson } from "./canonical.js";
 
 export type DataClassification = NonNullable<PassportCompliance["dataClassification"]>;
+
+/** The concrete operation the agent wants performed. */
+export interface AuthorizedAction {
+  /** Tool, API operation or MCP tool name, for example "payments.create_transfer". */
+  tool: string;
+  /** The resource the side effect lands on: an account, a URL, a record id. */
+  target?: string;
+  /** Arguments exactly as they will be executed. Plain JSON data only. */
+  args?: unknown;
+}
 
 export interface AuthorizationRequest {
   /** The capability the agent is exercising, in subject.verb form. */
@@ -31,9 +49,24 @@ export interface AuthorizationRequest {
   region?: string;
   /** Most sensitive data the engagement will expose to the agent. */
   dataClassification?: DataClassification;
+  /**
+   * The exact action. It does not change the decision; it is bound into the
+   * decision digest so checkExecution() can refuse a substituted action.
+   */
+  action?: AuthorizedAction;
 }
 
 export type Decision = "allow" | "escalate" | "deny";
+
+export interface DecisionBinding {
+  /** "sha256:<hex>" over the canonical request and the passport identity. */
+  digest: string;
+  /** Single-use value, claimed by checkExecution() when given a nonceStore. */
+  nonce: string;
+  issuedAt: string;
+  /** checkExecution() refuses after this. */
+  expiresAt: string;
+}
 
 export interface AuthorizationResult {
   decision: Decision;
@@ -47,7 +80,41 @@ export interface AuthorizationResult {
   issuerDomain?: string;
   keyId?: string;
   evaluatedAt: string;
+  /** Ties this decision to the exact request it evaluated. */
+  binding: DecisionBinding;
 }
+
+export interface AuthorizeOptions {
+  now?: () => Date;
+  /**
+   * How long an allow decision may be executed, in seconds. Default 60.
+   * An escalation stays valid for the issuer's humanInLoop.slaHours (and at
+   * least this long), so the person's confirmation applies to this exact
+   * request.
+   */
+  ttlSeconds?: number;
+}
+
+/** Records nonces so a decision can be executed once. */
+export interface NonceStore {
+  /** Atomically record the nonce. Return false if it was already recorded. */
+  claim(nonce: string, expiresAt: string): boolean | Promise<boolean>;
+}
+
+export interface ExecutionCheckOptions {
+  now?: () => Date;
+  /** Set when a person at the issuer confirmed an escalated decision. */
+  humanApproved?: boolean;
+  /** Enforces single use. Without one, the same decision can pass more than once. */
+  nonceStore?: NonceStore;
+}
+
+export type ExecutionCheckResult =
+  | { ok: true }
+  | { ok: false; errors: VerificationError[] };
+
+const DIGEST_CONTEXT = "agent-passport-decision-v1";
+const DEFAULT_TTL_SECONDS = 60;
 
 const CLASSIFICATION_RANK: Record<DataClassification, number> = {
   public: 0,
@@ -56,64 +123,183 @@ const CLASSIFICATION_RANK: Record<DataClassification, number> = {
   "regulated-pii": 3,
 };
 
-export function authorize(
+export async function authorize(
   verification: VerifyResult,
   request: AuthorizationRequest,
-  opts: { now?: () => Date } = {},
-): AuthorizationResult {
-  const evaluatedAt = (opts.now ?? (() => new Date()))().toISOString();
+  opts: AuthorizeOptions = {},
+): Promise<AuthorizationResult> {
+  const now = (opts.now ?? (() => new Date()))();
+  const evaluatedAt = now.toISOString();
+  // Only a verified passport's contents are trusted: an unverified one could
+  // name any agent and any escalation contact.
+  const passport = verification.ok ? verification.passport : undefined;
+  const identity = {
+    issuerDomain: passport?.issuer.domain,
+    agentId: passport?.agent.id,
+    keyId: passport?.signature.keyId,
+  };
 
-  if (!verification.ok) {
-    return {
-      decision: "deny",
-      allow: false,
-      reasons: [
-        {
-          code: "passport.unverified",
-          message: "The passport did not verify, so it grants no authority.",
-          hint: verification.errors.map((e) => e.code).join(", "),
-        },
-      ],
-      evaluatedAt,
-    };
+  let decision: Decision;
+  let reasons: VerificationError[];
+  if (!verification.ok || !passport) {
+    decision = "deny";
+    reasons = [
+      {
+        code: "passport.unverified",
+        message: "The passport did not verify, so it grants no authority.",
+        hint: verification.ok ? undefined : verification.errors.map((e) => e.code).join(", "),
+      },
+    ];
+  } else {
+    const denials: VerificationError[] = [];
+    const escalations: VerificationError[] = [];
+    checkScope(passport, request, denials);
+    checkCounterparty(passport, request, denials);
+    checkCompliance(passport, request, denials);
+    checkAmount(passport, request, denials, escalations);
+    decision = denials.length ? "deny" : escalations.length ? "escalate" : "allow";
+    reasons =
+      decision === "allow"
+        ? [
+            {
+              code: "authority.within-envelope",
+              message: `${request.scope} is within the authority ${passport.issuer.displayName} published for this agent.`,
+            },
+          ]
+        : [...denials, ...escalations];
   }
 
-  const passport = verification.passport;
-  const denials: VerificationError[] = [];
-  const escalations: VerificationError[] = [];
-
-  checkScope(passport, request, denials);
-  checkCounterparty(passport, request, denials);
-  checkCompliance(passport, request, denials);
-  checkAmount(passport, request, denials, escalations);
-
-  const decision: Decision = denials.length ? "deny" : escalations.length ? "escalate" : "allow";
-  const reasons =
-    decision === "allow"
-      ? [
-          {
-            code: "authority.within-envelope",
-            message: `${request.scope} is within the authority ${passport.issuer.displayName} published for this agent.`,
-          },
-        ]
-      : [...denials, ...escalations];
+  const ttl = opts.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+  const lifetime =
+    decision === "escalate" && passport
+      ? Math.max(ttl, passport.authority.humanInLoop.slaHours * 3600)
+      : ttl;
 
   return {
     decision,
     allow: decision === "allow",
     reasons,
     escalation:
-      decision === "allow"
+      decision === "allow" || !passport
         ? undefined
         : {
             to: passport.authority.humanInLoop.escalation,
             slaHours: passport.authority.humanInLoop.slaHours,
           },
-    agentId: passport.agent.id,
-    issuerDomain: passport.issuer.domain,
-    keyId: passport.signature.keyId,
+    ...identity,
     evaluatedAt,
+    binding: {
+      digest: await requestDigest(identity, request),
+      nonce: crypto.randomUUID(),
+      issuedAt: evaluatedAt,
+      expiresAt: new Date(now.getTime() + lifetime * 1000).toISOString(),
+    },
   };
+}
+
+/**
+ * Run immediately before the side effect, with the final values that will
+ * be executed. Refuses when the decision was not an allow (or an escalation
+ * a person confirmed), has expired, was already used, or was made for a
+ * different request: another scope, amount, counterparty, tool, target or
+ * arguments.
+ */
+export async function checkExecution(
+  decision: AuthorizationResult,
+  request: AuthorizationRequest,
+  opts: ExecutionCheckOptions = {},
+): Promise<ExecutionCheckResult> {
+  if (!decision.binding) {
+    return {
+      ok: false,
+      errors: [{ code: "execution.unbound", message: "The decision carries no binding to check against." }],
+    };
+  }
+  const now = (opts.now ?? (() => new Date()))().getTime();
+  const errors: VerificationError[] = [];
+
+  if (decision.decision === "deny") {
+    errors.push({ code: "execution.denied", message: "The decision was deny." });
+  }
+  if (decision.decision === "escalate" && !opts.humanApproved) {
+    errors.push({
+      code: "execution.needs-human",
+      message: `A person at the issuer must confirm first${decision.escalation ? ` (${decision.escalation.to})` : ""}.`,
+    });
+  }
+  if (Date.parse(decision.binding.expiresAt) <= now) {
+    errors.push({
+      code: "execution.expired",
+      message: `The decision expired at ${decision.binding.expiresAt}. Authorize the final request again.`,
+    });
+  }
+  const identity = {
+    issuerDomain: decision.issuerDomain,
+    agentId: decision.agentId,
+    keyId: decision.keyId,
+  };
+  if ((await requestDigest(identity, request)) !== decision.binding.digest) {
+    errors.push({
+      code: "execution.request-changed",
+      message:
+        "This is not the request that was authorized: the scope, amount, counterparty, tool, target or arguments changed.",
+    });
+  }
+  if (errors.length) return { ok: false, errors };
+
+  if (opts.nonceStore && !(await opts.nonceStore.claim(decision.binding.nonce, decision.binding.expiresAt))) {
+    return {
+      ok: false,
+      errors: [{ code: "execution.replayed", message: "This decision was already used." }],
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * A nonce store for a single process. Executors spread across processes or
+ * machines need a shared store with an atomic insert, such as Redis SET NX.
+ */
+export function memoryNonceStore(): NonceStore {
+  const claimed = new Map<string, number>();
+  return {
+    claim(nonce, expiresAt) {
+      const now = Date.now();
+      for (const [n, expiry] of claimed) if (expiry <= now) claimed.delete(n);
+      if (claimed.has(nonce)) return false;
+      claimed.set(nonce, Date.parse(expiresAt));
+      return true;
+    },
+  };
+}
+
+async function requestDigest(
+  identity: { issuerDomain?: string; agentId?: string; keyId?: string },
+  request: AuthorizationRequest,
+): Promise<string> {
+  const material = canonicalJson({
+    context: DIGEST_CONTEXT,
+    passport: identity,
+    request: {
+      scope: request.scope,
+      amount: request.amount
+        ? { amount: request.amount.amount, currency: request.amount.currency.toUpperCase() }
+        : undefined,
+      priorSpend: request.priorSpend,
+      counterpartyDomain: request.counterpartyDomain?.trim().toLowerCase().replace(/\.$/, ""),
+      counterpartyHasPassport: request.counterpartyHasPassport,
+      region: request.region?.toUpperCase(),
+      dataClassification: request.dataClassification,
+      action: request.action
+        ? { tool: request.action.tool, target: request.action.target, args: request.action.args }
+        : undefined,
+    },
+  });
+  const hash = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(material) as unknown as BufferSource,
+  );
+  return `sha256:${[...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function checkScope(

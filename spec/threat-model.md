@@ -68,6 +68,14 @@ This document expands the §8 summary in the canonical spec. It enumerates the f
 
 **Residual risk.** Third-party verifiers written against the earlier spec text, which implied the check without stating it. Spec §9 now lists it as a conformance requirement.
 
+### 1.9 Action substitution between authorization and execution
+
+**Scenario.** A request is authorized for one action, say 20 units of SKU 123 for $4,000, and the target or arguments change before the side effect happens: a bug, a race, an injected prompt that edits the tool call, or a compromised component between the check and the executor.
+
+**Mitigation.** Spec §7 step 10 applies at the moment of the side effect. The reference library binds each decision to a SHA-256 digest of the exact request (scope, amount, counterparty, tool, target and arguments) and of the passport identity it was checked against, with a nonce and an expiry: 60 seconds by default, or the issuer's response window for an escalation. `checkExecution()` recomputes the digest from the final values and refuses on any change, after expiry, for a deny, for an escalation no person confirmed, and on reuse when given a nonce store.
+
+**Residual risk.** The binding is unsigned, so it protects only where the component that decides and the component that acts trust each other, usually within one system. Carrying a decision across a boundary needs a signed receipt (proposal: [`proposals/execution-binding.md`](./proposals/execution-binding.md)). Single use is only as strong as the nonce store: a per-process store does not cover executors spread across machines.
+
 ## 2. Threats explicitly out of scope
 
 ### 2.1 Transport security

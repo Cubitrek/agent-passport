@@ -9,39 +9,54 @@
  *
  * Keys sort by UTF-16 code unit and scalars are written as JSON.stringify
  * writes them, which matches RFC 8785 (JCS) for well-formed passports.
- * This module produces the canonical bytes for both signers and verifiers.
+ * This module produces the canonical bytes for both signers and verifiers,
+ * and the request digests that bind authorization decisions.
  */
 
 import type { AgentPassport } from "./types.js";
 
 /**
- * Serialise an object with sorted keys. Recursive across nested objects and
- * arrays. Numbers, strings, booleans, and nulls are emitted as JSON.stringify
- * does. Arrays preserve order.
+ * Serialise JSON data with sorted keys and no whitespace. Recursive across
+ * nested objects and arrays. Strings, numbers, booleans and null are written
+ * as JSON.stringify writes them; object members whose value is undefined are
+ * omitted. Anything that is not plain JSON data (a Date, a Map, NaN, a
+ * bigint, a function) throws, because it would otherwise serialise to
+ * something ambiguous such as {} or null.
  */
-function stringifySortedKeys(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (value === null) return "null";
-  if (typeof value === "number" || typeof value === "boolean") {
-    return JSON.stringify(value);
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return JSON.stringify(value);
+    case "number":
+      if (!Number.isFinite(value)) {
+        throw new TypeError(`Canonical JSON cannot represent ${value}`);
+      }
+      return JSON.stringify(value);
+    case "object": {
+      if (Array.isArray(value)) {
+        return (
+          "[" +
+          value.map((v) => (v === undefined ? "null" : canonicalJson(v))).join(",") +
+          "]"
+        );
+      }
+      if (Object.prototype.toString.call(value) !== "[object Object]") {
+        throw new TypeError("Canonical JSON accepts plain objects, arrays and scalars only");
+      }
+      const entries = Object.entries(value as Record<string, unknown>)
+        .filter(([, v]) => v !== undefined)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      return (
+        "{" +
+        entries.map(([k, v]) => JSON.stringify(k) + ":" + canonicalJson(v)).join(",") +
+        "}"
+      );
+    }
+    default:
+      throw new TypeError(`Canonical JSON cannot represent a ${typeof value}`);
   }
-  if (typeof value === "string") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return "[" + value.map((v) => stringifySortedKeys(v)).join(",") + "]";
-  }
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return (
-      "{" +
-      entries
-        .map(([k, v]) => JSON.stringify(k) + ":" + stringifySortedKeys(v))
-        .join(",") +
-      "}"
-    );
-  }
-  // undefined / functions / symbols
-  return "null";
 }
 
 /**
@@ -54,7 +69,7 @@ export function canonicalize(passport: AgentPassport): {
 } {
   const cloned = structuredClone(passport) as AgentPassport;
   cloned.signature = { ...cloned.signature, value: "" };
-  const text = stringifySortedKeys(cloned);
+  const text = canonicalJson(cloned);
   return { text, bytes: new TextEncoder().encode(text) };
 }
 

@@ -9,10 +9,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   authorize,
+  checkExecution,
   describePassport,
   diagnoseAgentPassport,
   dnsTxtRecord,
   draftAgentPassport,
+  memoryNonceStore,
   signAgentPassport,
   validate,
   verifyAgentPassport,
@@ -62,8 +64,8 @@ const dohTxt = (record, ad = true) => () =>
 
 // authorize()
 
-test("authorize allows a request inside the envelope", () => {
-  const result = authorize(verified(loadExample("acme.agent-passport.json")), {
+test("authorize allows a request inside the envelope", async () => {
+  const result = await authorize(verified(loadExample("acme.agent-passport.json")), {
     scope: "procurement.purchase",
     amount: { amount: 5_000, currency: "USD" },
     counterpartyDomain: "globex.example",
@@ -74,8 +76,8 @@ test("authorize allows a request inside the envelope", () => {
   assert.equal(result.escalation, undefined);
 });
 
-test("authorize escalates between the human threshold and the ceiling, naming the issuer's human", () => {
-  const result = authorize(verified(loadExample("acme.agent-passport.json")), {
+test("authorize escalates between the human threshold and the ceiling, naming the issuer's human", async () => {
+  const result = await authorize(verified(loadExample("acme.agent-passport.json")), {
     scope: "procurement.purchase",
     amount: { amount: 42_000, currency: "USD" },
     counterpartyDomain: "globex.example",
@@ -85,8 +87,8 @@ test("authorize escalates between the human threshold and the ceiling, naming th
   assert.deepEqual(result.escalation, { to: "procurement-team@acme.example", slaHours: 4 });
 });
 
-test("authorize denies above the ceiling and outside scope, reporting both", () => {
-  const result = authorize(verified(loadExample("acme.agent-passport.json")), {
+test("authorize denies above the ceiling and outside scope, reporting both", async () => {
+  const result = await authorize(verified(loadExample("acme.agent-passport.json")), {
     scope: "sales.discount",
     amount: { amount: 60_000, currency: "USD" },
     counterpartyDomain: "globex.example",
@@ -95,8 +97,8 @@ test("authorize denies above the ceiling and outside scope, reporting both", () 
   assert.deepEqual(codes(result.reasons), ["scope.not-granted", "amount.above-ceiling"]);
 });
 
-test("authorize denies an unverified passport whatever it claims", () => {
-  const result = authorize(
+test("authorize denies an unverified passport whatever it claims", async () => {
+  const result = await authorize(
     { ok: false, errors: [{ code: "time.expired", message: "expired" }], warnings: [] },
     { scope: "procurement.purchase" },
   );
@@ -104,40 +106,40 @@ test("authorize denies an unverified passport whatever it claims", () => {
   assert.deepEqual(codes(result.reasons), ["passport.unverified"]);
 });
 
-test("authorize applies counterparty rules", () => {
+test("authorize applies counterparty rules", async () => {
   const passport = loadExample("acme.agent-passport.json");
-  const ask = (req) => authorize(verified(passport), { scope: "procurement.rfx", ...req }).reasons;
+  const ask = async (req) => (await authorize(verified(passport), { scope: "procurement.rfx", ...req })).reasons;
 
-  assert.deepEqual(codes(ask({ counterpartyDomain: "globex.example", counterpartyHasPassport: false })), [
+  assert.deepEqual(codes(await ask({ counterpartyDomain: "globex.example", counterpartyHasPassport: false })), [
     "counterparty.passport-required",
   ]);
   passport.counterparties = { openTo: "allowlist-only", allowlist: ["globex.example"], blocklist: ["evil.example"] };
-  assert.deepEqual(codes(ask({ counterpartyDomain: "GLOBEX.example" })), ["authority.within-envelope"]);
-  assert.deepEqual(codes(ask({ counterpartyDomain: "initech.example" })), ["counterparty.not-allowlisted"]);
-  assert.deepEqual(codes(ask({ counterpartyDomain: "evil.example" })), [
+  assert.deepEqual(codes(await ask({ counterpartyDomain: "GLOBEX.example" })), ["authority.within-envelope"]);
+  assert.deepEqual(codes(await ask({ counterpartyDomain: "initech.example" })), ["counterparty.not-allowlisted"]);
+  assert.deepEqual(codes(await ask({ counterpartyDomain: "evil.example" })), [
     "counterparty.blocked",
     "counterparty.not-allowlisted",
   ]);
 });
 
-test("authorize checks region and data classification", () => {
+test("authorize checks region and data classification", async () => {
   const passport = loadExample("acme.agent-passport.json");
-  const ask = (req) => codes(authorize(verified(passport), { scope: "procurement.rfx", ...req }).reasons);
-  assert.deepEqual(ask({ region: "us" }), ["authority.within-envelope"]);
-  assert.deepEqual(ask({ region: "FR" }), ["region.not-cleared"]);
-  assert.deepEqual(ask({ dataClassification: "internal" }), ["authority.within-envelope"]);
-  assert.deepEqual(ask({ dataClassification: "regulated-pii" }), ["data.classification-exceeds"]);
+  const ask = async (req) => codes((await authorize(verified(passport), { scope: "procurement.rfx", ...req })).reasons);
+  assert.deepEqual(await ask({ region: "us" }), ["authority.within-envelope"]);
+  assert.deepEqual(await ask({ region: "FR" }), ["region.not-cleared"]);
+  assert.deepEqual(await ask({ dataClassification: "internal" }), ["authority.within-envelope"]);
+  assert.deepEqual(await ask({ dataClassification: "regulated-pii" }), ["data.classification-exceeds"]);
 });
 
-test("authorize handles cumulative ceilings and foreign currencies", () => {
+test("authorize handles cumulative ceilings and foreign currencies", async () => {
   const passport = loadExample("acme.agent-passport.json");
   passport.authority.spendCeiling.perEngagement = false;
-  const ask = (req) => codes(authorize(verified(passport), { scope: "procurement.purchase", ...req }).reasons);
+  const ask = async (req) => codes((await authorize(verified(passport), { scope: "procurement.purchase", ...req })).reasons);
   const usd = (amount) => ({ amount, currency: "USD" });
-  assert.deepEqual(ask({ amount: usd(5_000) }), ["amount.cumulative-unknown"]);
-  assert.deepEqual(ask({ amount: usd(5_000), priorSpend: 48_000 }), ["amount.above-ceiling"]);
-  assert.deepEqual(ask({ amount: usd(5_000), priorSpend: 1_000 }), ["authority.within-envelope"]);
-  assert.deepEqual(ask({ amount: { amount: 10, currency: "EUR" } }), ["amount.currency-unsupported"]);
+  assert.deepEqual(await ask({ amount: usd(5_000) }), ["amount.cumulative-unknown"]);
+  assert.deepEqual(await ask({ amount: usd(5_000), priorSpend: 48_000 }), ["amount.above-ceiling"]);
+  assert.deepEqual(await ask({ amount: usd(5_000), priorSpend: 1_000 }), ["authority.within-envelope"]);
+  assert.deepEqual(await ask({ amount: { amount: 10, currency: "EUR" } }), ["amount.currency-unsupported"]);
 });
 
 // draftAgentPassport() and describePassport()
@@ -332,6 +334,7 @@ test("authorize CLI exits 0 to allow, 2 to escalate, 1 to deny", async () => {
     assert.equal(run("--scope", "sales.discount").status, 1);
     const asJson = JSON.parse(run("--scope", "procurement.purchase", "--amount", "20000", "--json").stdout);
     assert.equal(asJson.decision, "escalate");
+    assert.match(asJson.binding.digest, /^sha256:[0-9a-f]{64}$/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -418,4 +421,140 @@ test("doctor describes cache lifetimes with correct plurals", async () => {
   });
   const result = await diagnoseAgentPassport({ domain: "acme.example", now: () => new Date("2026-06-01T00:00:00Z") });
   assert.equal(result.checks.find((c) => c.id === "http.cache").detail, "max-age=86400 (1 day)");
+});
+
+// Execution binding: authorize() binds the decision, checkExecution() enforces it.
+
+const acmeVerified = () => verified(loadExample("acme.agent-passport.json"));
+const order = (overrides = {}) => ({
+  scope: "procurement.purchase",
+  amount: { amount: 4_000, currency: "USD" },
+  counterpartyDomain: "globex.example",
+  action: {
+    tool: "orders.create",
+    target: "globex.example/catalog/sku-123",
+    args: { quantity: 20, unitPrice: 200 },
+  },
+  ...overrides,
+});
+
+test("a decision passes for the exact request and is refused for any change", async () => {
+  const decision = await authorize(acmeVerified(), order());
+  assert.match(decision.binding.digest, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(await checkExecution(decision, order()), { ok: true });
+
+  const base = order().action;
+  const changed = [
+    order({ action: { ...base, target: "globex.example/catalog/sku-999" } }),
+    order({ action: { ...base, args: { quantity: 200, unitPrice: 200 } } }),
+    order({ action: { ...base, tool: "orders.cancel" } }),
+    order({ action: undefined }),
+    order({ amount: { amount: 4_001, currency: "USD" } }),
+    order({ counterpartyDomain: "initech.example" }),
+    order({ scope: "procurement.negotiate" }),
+  ];
+  for (const request of changed) {
+    const result = await checkExecution(decision, request);
+    assert.deepEqual(codes(result.errors), ["execution.request-changed"], JSON.stringify(request));
+  }
+});
+
+test("the binding ignores key order and domain case, not values", async () => {
+  const decision = await authorize(acmeVerified(), order());
+  const same = order({
+    counterpartyDomain: "GLOBEX.example",
+    action: { args: { unitPrice: 200, quantity: 20 }, target: "globex.example/catalog/sku-123", tool: "orders.create" },
+  });
+  assert.deepEqual(await checkExecution(decision, same), { ok: true });
+});
+
+test("an allow decision expires after its time to live", async () => {
+  const t0 = new Date("2026-06-01T00:00:00Z");
+  const decision = await authorize(acmeVerified(), order(), { now: () => t0, ttlSeconds: 30 });
+  const at = (ms) => ({ now: () => new Date(t0.getTime() + ms) });
+  assert.deepEqual(await checkExecution(decision, order(), at(29_000)), { ok: true });
+  assert.deepEqual(codes((await checkExecution(decision, order(), at(31_000))).errors), ["execution.expired"]);
+});
+
+test("an escalation needs a person's confirmation and lasts for the issuer's response window", async () => {
+  const t0 = new Date("2026-06-01T00:00:00Z");
+  const big = order({ amount: { amount: 42_000, currency: "USD" } });
+  const decision = await authorize(acmeVerified(), big, { now: () => t0 });
+  assert.equal(decision.decision, "escalate");
+  assert.equal(Date.parse(decision.binding.expiresAt) - t0.getTime(), 4 * 3600 * 1000);
+
+  const later = () => new Date(t0.getTime() + 3 * 3600 * 1000);
+  assert.deepEqual(codes((await checkExecution(decision, big, { now: later })).errors), ["execution.needs-human"]);
+  assert.deepEqual(await checkExecution(decision, big, { now: later, humanApproved: true }), { ok: true });
+  const edited = order({ amount: { amount: 42_000, currency: "USD" }, action: { ...big.action, target: "globex.example/catalog/sku-999" } });
+  assert.deepEqual(
+    codes((await checkExecution(decision, edited, { now: later, humanApproved: true })).errors),
+    ["execution.request-changed"],
+  );
+});
+
+test("a denied decision never passes, whatever the options", async () => {
+  const request = order({ scope: "sales.discount" });
+  const decision = await authorize(acmeVerified(), request);
+  const result = await checkExecution(decision, request, { humanApproved: true });
+  assert.deepEqual(codes(result.errors), ["execution.denied"]);
+});
+
+test("a nonce store makes each decision single-use", async () => {
+  const store = memoryNonceStore();
+  const decision = await authorize(acmeVerified(), order());
+  assert.deepEqual(await checkExecution(decision, order(), { nonceStore: store }), { ok: true });
+  assert.deepEqual(codes((await checkExecution(decision, order(), { nonceStore: store })).errors), ["execution.replayed"]);
+  const fresh = await authorize(acmeVerified(), order());
+  assert.deepEqual(await checkExecution(fresh, order(), { nonceStore: store }), { ok: true });
+});
+
+test("a decision cannot be relabelled for another agent", async () => {
+  const decision = await authorize(acmeVerified(), order());
+  const relabelled = { ...decision, agentId: "acme.example:treasury-v1" };
+  assert.deepEqual(codes((await checkExecution(relabelled, order())).errors), ["execution.request-changed"]);
+});
+
+test("arguments that have no unambiguous JSON form are refused", async () => {
+  const withArgs = (args) => order({ action: { tool: "orders.create", args } });
+  await assert.rejects(authorize(acmeVerified(), withArgs({ when: new Date() })), TypeError);
+  await assert.rejects(authorize(acmeVerified(), withArgs({ quantity: Number.NaN })), TypeError);
+});
+
+test("the CLI binds --tool, --target and --args into the decision", async () => {
+  const dir = tempDir();
+  try {
+    const key = newKey("acme-2026-q2");
+    const file = await signedFile(dir, key);
+    const run = (args) =>
+      JSON.parse(
+        spawnSync(process.execPath, [cli, "authorize", file, "--public-key", key.b64url, "--no-revocation",
+          "--scope", "procurement.purchase", "--amount", "500", "--tool", "orders.create",
+          "--target", "sku-123", "--args", args, "--json"], { encoding: "utf8" }).stdout,
+      );
+    const a = run('{"quantity":2}');
+    const b = run('{"quantity":3}');
+    assert.equal(a.decision, "allow");
+    assert.notEqual(a.binding.digest, b.binding.digest);
+    const check = await checkExecution(a, {
+      scope: "procurement.purchase",
+      amount: { amount: 500, currency: "USD" },
+      action: { tool: "orders.create", target: "sku-123", args: { quantity: 2 } },
+    });
+    assert.deepEqual(check, { ok: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a decision on an unverified passport repeats none of its claims", async () => {
+  const claimed = loadExample("acme.agent-passport.json");
+  const decision = await authorize(
+    { ok: false, errors: [{ code: "time.expired", message: "expired" }], warnings: [], passport: claimed },
+    order(),
+  );
+  assert.equal(decision.decision, "deny");
+  assert.equal(decision.escalation, undefined);
+  assert.equal(decision.agentId, undefined);
+  assert.equal(decision.issuerDomain, undefined);
 });

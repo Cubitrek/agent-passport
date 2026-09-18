@@ -22,7 +22,7 @@ npm install @cubitrek/agent-passport-verifier
 | `agent-passport renew <file> --key <pem>` | Re-dates and re-signs a passport, and confirms DNS carries the key |
 | `agent-passport doctor <domain>` | Health check with fixes; exits 1 on any failure |
 | `agent-passport verify <domain or file>` | Verifies and explains a passport in plain English |
-| `agent-passport authorize <domain or file> --scope <s> [--amount <n>]` | Allow, escalate or deny; exits 0, 2 or 1 |
+| `agent-passport authorize <domain or file> --scope <s> [--amount <n>] [--tool <t> --target <id> --args <json>]` | Allow, escalate or deny, bound to the exact action; exits 0, 2 or 1 |
 | `agent-passport keygen --kid <id> --out <pem>` | Generates a signing key and prints its TXT record |
 | `agent-passport sign <file> --key <pem>` | Signs a passport file |
 | `agent-passport mcp` | Runs the MCP server on stdio |
@@ -32,18 +32,32 @@ npm install @cubitrek/agent-passport-verifier
 ## Verify, then authorize
 
 ```typescript
-import { authorize, verifyAgentPassport } from "@cubitrek/agent-passport-verifier";
+import { authorize, checkExecution, memoryNonceStore, verifyAgentPassport } from "@cubitrek/agent-passport-verifier";
 
 const verification = await verifyAgentPassport({ domain: "acme.example" });
 
-const decision = authorize(verification, {
+const decision = await authorize(verification, {
   scope: "procurement.purchase",
   amount: { amount: 42_000, currency: "USD" },
   counterpartyDomain: "yourcompany.example",
+  action: { tool: "orders.create", target: "sku-123", args: { quantity: 20 } },
 });
 // decision.decision is "allow", "escalate" or "deny".
 // decision.reasons explains it; decision.escalation names the issuer's human.
+
+// Immediately before the side effect, with the values about to be executed:
+const nonceStore = memoryNonceStore(); // one per process; share one across machines
+const check = await checkExecution(decision, finalRequest, { nonceStore });
+if (!check.ok) throw new Error(check.errors.map((e) => e.code).join(", "));
 ```
+
+### Bind the decision to the action
+
+`authorize()` binds every decision to the exact request: a SHA-256 digest over the scope, amount, counterparty and the concrete tool, target and arguments, plus the passport identity, with a nonce and an expiry. Allow decisions last 60 seconds by default (`ttlSeconds`); an escalation lasts for the issuer's response window so the person's confirmation applies to this exact request.
+
+`checkExecution()` recomputes the digest from the final values and refuses if anything changed, the decision expired, it was a deny, an escalation has no confirmation (`humanApproved`), or it was already used (with a `nonceStore`). `memoryNonceStore()` covers one process; executors on several machines need a shared store with an atomic insert, such as Redis `SET NX`.
+
+The binding is unsigned, so it protects where the component that decides and the component that acts trust each other. Carrying a decision across organisations is a [v0.2 proposal](https://github.com/Cubitrek/agent-passport/blob/main/spec/proposals/execution-binding.md).
 
 ### What `verifyAgentPassport` proves
 
@@ -122,7 +136,9 @@ Speaks MCP protocol versions 2024-11-05 through 2025-11-25 over stdio, with no d
 | Function | Returns |
 | --- | --- |
 | `verifyAgentPassport(options)` | `{ ok: true, passport, warnings }` or `{ ok: false, errors, warnings, passport? }`. A malformed passport produces errors, never an exception. |
-| `authorize(verification, request)` | `{ decision, allow, reasons, escalation?, agentId, issuerDomain, keyId, evaluatedAt }` |
+| `authorize(verification, request, options?)` | Promise of `{ decision, allow, reasons, escalation?, agentId, issuerDomain, keyId, evaluatedAt, binding }` |
+| `checkExecution(decision, finalRequest, options?)` | Promise of `{ ok: true }` or `{ ok: false, errors }` |
+| `memoryNonceStore()` | A single-process `NonceStore` for `checkExecution` |
 | `diagnoseAgentPassport(options)` | `{ ok, domain, url, checks, passport?, verification? }` |
 | `describePassport(passport, now?)` | Plain-English summary |
 | `draftAgentPassport(input)` | An unsigned, schema-valid passport |
@@ -135,7 +151,9 @@ Speaks MCP protocol versions 2024-11-05 through 2025-11-25 over stdio, with no d
 
 `verifyAgentPassport` options: `domain` or `passport`; `resolveSignerPublicKey` (`"dns"`, `{ publicKeyB64 }` or a function); `checkRevocation` (default true); `revocationFailure` (`"warn"` or `"error"`); `timeoutMs` (default 10000); `signal`; `now`.
 
-`authorize` request: `scope`; optional `amount`, `priorSpend`, `counterpartyDomain`, `counterpartyHasPassport`, `region`, `dataClassification`.
+`authorize` request: `scope`; optional `amount`, `priorSpend`, `counterpartyDomain`, `counterpartyHasPassport`, `region`, `dataClassification`, and `action` (`tool`, `target`, `args`). Options: `ttlSeconds` (default 60), `now`.
+
+`checkExecution` options: `humanApproved`, `nonceStore`, `now`.
 
 ## Result codes
 
@@ -171,6 +189,17 @@ Authorization reasons:
 | `authority.within-envelope` | allow |
 | `amount.above-human-threshold`, `amount.currency-unsupported`, `amount.cumulative-unknown` | escalate |
 | `passport.unverified`, `scope.not-granted`, `amount.above-ceiling`, `counterparty.blocked`, `counterparty.not-allowlisted`, `counterparty.passport-required`, `region.not-cleared`, `data.classification-exceeds` | deny |
+
+Execution checks (`checkExecution`):
+
+| Code | Meaning |
+| --- | --- |
+| `execution.request-changed` | The final request differs from the one authorized: scope, amount, counterparty, tool, target or arguments. |
+| `execution.expired` | The decision is past `binding.expiresAt`. Authorize the final request again. |
+| `execution.denied` | The decision was a deny. |
+| `execution.needs-human` | An escalation without `humanApproved`. |
+| `execution.replayed` | The nonce store has already seen this decision. |
+| `execution.unbound` | The decision has no binding. |
 
 ## Behaviour notes
 

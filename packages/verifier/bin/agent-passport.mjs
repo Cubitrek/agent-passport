@@ -81,9 +81,13 @@ Exits 1 when any check fails.`,
   authorize: `agent-passport authorize <domain | passport.json> --scope <subject.verb>
     [--amount <n>] [--currency <USD>] [--prior-spend <n>] [--as <your-domain>]
     [--region <CC>] [--data <public|internal|confidential-business|regulated-pii>]
+    [--tool <name> [--target <id>] [--args <json>]] [--ttl <seconds>]
     [--public-key <base64>] [--no-revocation] [--json]
 
-Exits 0 for allow, 2 for escalate, 1 for deny.`,
+Exits 0 for allow, 2 for escalate, 1 for deny. The decision is bound to the exact
+request, including --tool, --target and --args, and expires after --ttl seconds
+(default 60; escalations last for the issuer's response window). Whatever performs
+the action must call checkExecution() with the final values before acting.`,
   mcp: `agent-passport mcp
 
 Speaks MCP over stdio. To add it to Claude Code:
@@ -139,6 +143,14 @@ function number(value, name) {
   const n = Number(value);
   if (value === "" || !Number.isFinite(n) || n < 0) fail(`--${name} must be a non-negative number`);
   return n;
+}
+
+function jsonFlag(value, name) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    fail(`--${name} must be valid JSON`);
+  }
 }
 
 function keyMaterial(privateKey) {
@@ -377,14 +389,23 @@ async function authorizeCommand(flags, [target]) {
   if (flags.data !== undefined && !DATA_CLASSES.includes(flags.data)) fail(`--data must be one of ${DATA_CLASSES.join(", ")}`);
   const currency = (flags.currency ?? "USD").toUpperCase();
   const verification = await verifyAgentPassport(targetOptions(target, flags));
-  const decision = authorize(verification, {
-    scope: flags.scope,
-    amount: flags.amount !== undefined ? { amount: number(flags.amount, "amount"), currency } : undefined,
-    priorSpend: flags["prior-spend"] !== undefined ? number(flags["prior-spend"], "prior-spend") : undefined,
-    counterpartyDomain: flags.as,
-    region: flags.region,
-    dataClassification: flags.data,
-  });
+  const action =
+    typeof flags.tool === "string"
+      ? { tool: flags.tool, target: flags.target, args: flags.args !== undefined ? jsonFlag(flags.args, "args") : undefined }
+      : undefined;
+  const decision = await authorize(
+    verification,
+    {
+      scope: flags.scope,
+      amount: flags.amount !== undefined ? { amount: number(flags.amount, "amount"), currency } : undefined,
+      priorSpend: flags["prior-spend"] !== undefined ? number(flags["prior-spend"], "prior-spend") : undefined,
+      counterpartyDomain: flags.as,
+      region: flags.region,
+      dataClassification: flags.data,
+      action,
+    },
+    { ttlSeconds: flags.ttl !== undefined ? number(flags.ttl, "ttl") : undefined },
+  );
   process.exitCode = { allow: 0, escalate: 2, deny: 1 }[decision.decision];
   if (flags.json) {
     process.stdout.write(json(decision));
@@ -397,6 +418,7 @@ async function authorizeCommand(flags, [target]) {
   if (decision.escalation) {
     console.log(`  Human contact at the issuer: ${decision.escalation.to}, responds within ${decision.escalation.slaHours}h`);
   }
+  console.log(dim(`  Bound to ${decision.binding.digest}, valid until ${decision.binding.expiresAt}`));
 }
 
 async function mcp() {

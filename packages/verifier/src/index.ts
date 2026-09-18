@@ -18,12 +18,18 @@ export { canonicalize, canonicalBytes } from "./canonical.js";
 export { fetchSigningKeys } from "./dns.js";
 export type { SigningKeyLookup, SigningKeyRecord } from "./dns.js";
 export { dnsTxtRecord, signAgentPassport } from "./sign.js";
-export { authorize } from "./authorize.js";
+export { authorize, checkExecution, memoryNonceStore } from "./authorize.js";
 export type {
   AuthorizationRequest,
   AuthorizationResult,
+  AuthorizedAction,
+  AuthorizeOptions,
   DataClassification,
   Decision,
+  DecisionBinding,
+  ExecutionCheckOptions,
+  ExecutionCheckResult,
+  NonceStore,
 } from "./authorize.js";
 export { daysUntilExpiry, describePassport } from "./describe.js";
 export { defaultKeyId, draftAgentPassport, guessEndpointType, isoSeconds } from "./draft.js";

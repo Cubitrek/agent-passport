@@ -52,13 +52,14 @@ npm install @cubitrek/agent-passport-verifier
 ```
 
 ```typescript
-import { authorize, verifyAgentPassport } from "@cubitrek/agent-passport-verifier";
+import { authorize, checkExecution, verifyAgentPassport } from "@cubitrek/agent-passport-verifier";
 
 const verification = await verifyAgentPassport({ domain: "acme.example" });
-const decision = authorize(verification, {
+const decision = await authorize(verification, {
   scope: "procurement.purchase",
   amount: { amount: 42_000, currency: "USD" },
   counterpartyDomain: "yourcompany.example",
+  action: { tool: "orders.create", target: "sku-123", args: { quantity: 20 } },
 });
 
 switch (decision.decision) {
@@ -75,6 +76,15 @@ switch (decision.decision) {
 ```
 
 `authorize` applies the whole authority envelope: scope, spend ceiling, the human-in-the-loop threshold, cumulative ceilings, counterparty rules, regions and data classification. An unverified passport is always a deny. Every result carries reason codes, so it doubles as an audit record.
+
+Each decision is also bound to the exact request, including the concrete tool, target and arguments, and expires after 60 seconds (or the issuer's response window for an escalation). Whatever performs the side effect checks the final values immediately before acting:
+
+```typescript
+const check = await checkExecution(decision, finalRequest, { nonceStore });
+if (!check.ok) throw new Error(check.errors.map((e) => e.code).join(", "));
+```
+
+It refuses if the target or arguments changed, the decision expired, it was a deny, an escalation has no person's confirmation, or it was already used.
 
 From a shell or a script:
 

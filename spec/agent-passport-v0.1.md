@@ -186,6 +186,8 @@ A receiving agent or middleware verifies an inbound contact like this:
 
     The reference library implements this step as `authorize()`, so receivers apply the envelope the same way.
 
+    Step 10 must hold at the moment of the side effect, not only when the request arrives. The component that performs the action must either apply step 10 to the final values (scope, amount, counterparty, and the concrete tool, target and arguments) immediately before acting, or confirm that an earlier decision was bound to exactly those values, has not expired and has not already been used. The reference library's `authorize()` returns such a binding and `checkExecution()` enforces it. Carrying a decision across organisational boundaries, where one party decides and another acts, is an open question for v0.2 (§10).
+
 A passport that fails any of steps 2 to 9 is invalid and the receiving agent must not act on its contents.
 
 **What verification proves.** A valid passport proves that whoever controls `issuer.domain` published this authority envelope for `agent.id`. It does not prove that the party sending the message is that agent: the passport is a public file, and anyone can fetch it and claim to be its subject. v0.1 leaves that binding to the transport. Before acting on a passport's authority, authenticate the caller as the issuer's agent, for example with mutual TLS, an OAuth client registered to the issuer's domain, or HTTP Message Signatures (RFC 9421) made with a key the issuer publishes. Request signing is an open question for v0.2 (§10).
@@ -240,6 +242,7 @@ The reference implementation is [`@cubitrek/agent-passport-verifier`](../package
 - A per-passport identifier, so revocation can target one issued passport rather than every passport for an `agent.id`.
 - Registering `agent-passport.json` in the IANA Well-Known URIs registry (RFC 8615). Other projects already publish different documents at the same path.
 - Third-party attestations: test and audit results signed by an independent party with a key in its own DNS. See [`proposals/attestations.md`](./proposals/attestations.md).
+- Signed decision receipts that carry an authorization decision, bound to the exact action, from the party that decides to the party that executes. See [`proposals/execution-binding.md`](./proposals/execution-binding.md).
 
 Comments, gaps, and corrections welcome via [github.com/cubitrek/agent-passport/issues](https://github.com/cubitrek/agent-passport/issues). Report vulnerabilities privately; see [SECURITY.md](../SECURITY.md).
 

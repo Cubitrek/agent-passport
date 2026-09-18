@@ -73,6 +73,9 @@ export const TOOLS = [
           enum: DATA_CLASSES,
           description: "Most sensitive data the engagement exposes to the agent",
         },
+        tool: { type: "string", description: "The exact tool or operation that will run, for example orders.create" },
+        target: { type: "string", description: "The resource the action lands on: an account, URL or record id" },
+        arguments: { type: "object", description: "The arguments exactly as they will be executed" },
       },
       required: ["domain", "scope"],
       additionalProperties: false,
@@ -143,7 +146,9 @@ const HANDLERS = {
   async authorize_agent_action(args) {
     const domain = requireString(args, "domain");
     const verification = await verifyAgentPassport({ domain });
-    const decision = authorize(verification, {
+    const tool = optionalString(args, "tool");
+    const decision = await authorize(verification, {
+      action: tool ? { tool, target: optionalString(args, "target"), args: args.arguments } : undefined,
       scope: requireString(args, "scope"),
       amount: typeof args.amount === "number" ? { amount: args.amount, currency: String(args.currency ?? "USD").toUpperCase() } : undefined,
       priorSpend: typeof args.prior_spend === "number" ? args.prior_spend : undefined,
@@ -156,6 +161,9 @@ const HANDLERS = {
       ...decision.reasons.map((r) => `- ${r.code}: ${r.message}${r.hint ? ` (${r.hint})` : ""}`),
     ];
     if (decision.escalation) lines.push(`Human contact at the issuer: ${decision.escalation.to} (responds within ${decision.escalation.slaHours}h)`);
+    lines.push(
+      `Bound to ${decision.binding.digest} until ${decision.binding.expiresAt}. The system that performs the action must check the final values against this decision (checkExecution) immediately before acting.`,
+    );
     return { text: lines.join("\n"), structured: decision };
   },
 
