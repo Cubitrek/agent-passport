@@ -1,12 +1,15 @@
 {
   "name": "@cubitrek/agent-passport-verifier",
-  "version": "0.1.1",
-  "description": "Reference verifier for the Agent Passport spec, v0.1. Validates schema, fetches the issuer's DNS-anchored Ed25519 public key, verifies the canonical-JSON signature, and checks expiry and revocation.",
+  "version": "0.1.2",
+  "description": "Reference verifier and issuer toolkit for the Agent Passport spec, v0.1. Validates schema, binds the Ed25519 signing key to the issuer's DNS zone, verifies the canonical-JSON signature, and checks expiry and revocation. Includes an agent-passport CLI for keygen, signing and verification.",
   "license": "MIT",
-  "homepage": "https://github.com/cubitrek/agent-passport",
+  "homepage": "https://github.com/Cubitrek/agent-passport#readme",
+  "bugs": {
+    "url": "https://github.com/Cubitrek/agent-passport/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/cubitrek/agent-passport.git",
+    "url": "git+https://github.com/Cubitrek/agent-passport.git",
     "directory": "packages/verifier"
   },
   "author": "Cubitrek <hello@cubitrek.com> (https://cubitrek.com)",
@@ -24,26 +27,41 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "agent-passport": "./bin/agent-passport.mjs"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./schema": "./dist/schema.js",
-    "./canonical": "./dist/canonical.js"
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js"
+    },
+    "./canonical": {
+      "types": "./dist/canonical.d.ts",
+      "import": "./dist/canonical.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "src",
+    "bin",
     "README.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "ajv": "^8.17.0",
