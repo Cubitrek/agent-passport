@@ -23,6 +23,7 @@ export interface PassportIssuer {
   legalName: string;
   displayName: string;
   logo?: string;
+  /** Must be inside `domain`, e.g. `_agent-passport.{domain}`. */
   signingKeyDns: string;
   contact?: { email?: string; url?: string };
 }
@@ -43,6 +44,7 @@ export interface PassportAuthority {
     escalation: string;
     slaHours: number;
   };
+  /** URL template containing `{engagementId}`. */
   decisionAudit: string;
   termsUrl?: string;
 }
@@ -94,12 +96,13 @@ export interface VerificationError {
 }
 
 /**
- * Strategy for getting the Ed25519 public key used to sign the passport.
+ * Where the verifier gets the Ed25519 public key that signed the passport.
  *
- *  - "dns": fetch the DNS TXT record at issuer.signingKeyDns. Default.
- *  - "trust-on-first-use": call the supplied resolver with the keyId; the
- *    caller can return a cached key.
- *  - { publicKeyB64: string }: provide a key directly. Useful in tests.
+ *  - "dns": look up the TXT record at issuer.signingKeyDns. Default.
+ *  - { publicKeyB64 }: use this key. Raw 32-byte or DER SPKI, base64 or
+ *    base64url. Useful in tests and for pinned counterparties.
+ *  - a function: return the key for this issuer and keyId (from a cache or
+ *    an allow-list, say), or null if unknown.
  */
 export type SignerKeyResolver =
   | "dns"
@@ -118,6 +121,14 @@ export interface VerifyOptions {
   resolveSignerPublicKey?: SignerKeyResolver;
   /** Whether to fetch and check revocationListUrl. Default true. */
   checkRevocation?: boolean;
+  /**
+   * What happens when the revocation list cannot be read: "warn" (default)
+   * passes with a warning, "error" fails verification. Use "error" for
+   * engagements at or above your human-in-the-loop threshold.
+   */
+  revocationFailure?: "warn" | "error";
+  /** Timeout for each network request, in milliseconds. Default 10000. */
+  timeoutMs?: number;
   /** AbortSignal forwarded to fetch calls. */
   signal?: AbortSignal;
   /** Override `now` for tests. */

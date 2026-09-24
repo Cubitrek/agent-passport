@@ -17,7 +17,7 @@
     "purpose": "Source, evaluate, and purchase goods and services on behalf of Acme operations within the published authority envelope.",
     "model": "claude-sonnet-4.5",
     "endpoints": {
-      "a2a": "https://agents.acme.example/.well-known/agent.json",
+      "a2a": "https://agents.acme.example/.well-known/agent-card.json",
       "mcp": "https://agents.acme.example/mcp",
       "rest": "https://agents.acme.example/api/procurement"
     }

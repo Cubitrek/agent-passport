@@ -2,21 +2,12 @@
 
 Businesses that publish a valid Agent Passport at `/.well-known/agent-passport.json`.
 
-To add yourself, send a PR appending one row to the table below. Once the maintainers fetch your passport and it validates against the [reference verifier](./packages/verifier), the row goes live and a verification badge appears at [cubitrek.com/agent-passport/adopters](https://cubitrek.com/agent-passport/adopters).
+To add yourself, send a PR appending one row to the table below. Once the maintainers fetch your passport and it validates against the [reference verifier](./packages/verifier), the row is merged and your domain is listed at [cubitrek.com/agent-passport/adopters](https://cubitrek.com/agent-passport/adopters).
 
 | Domain | Agent | Issued | Status |
 | --- | --- | --- | --- |
-| cubitrek.com | Cubitrek Humans-for-Agents Router | 2026-04-28 | Live |
+| cubitrek.com | Cubitrek Humans-for-Agents Router | 2026-09-15 | Pending: re-issued with key cubitrek-2026-q3, awaiting its DNS record |
 
 ## Verification badge
 
-Adopters can embed the badge on their site:
-
-```html
-<a href="https://cubitrek.com/agent-passport/adopters">
-  <img src="https://cubitrek.com/agent-passport/badge?domain=acme.example"
-       alt="Verified Agent Passport adopter" />
-</a>
-```
-
-The badge endpoint re-verifies on each render and returns red if the passport drops out of conformance.
+A self-updating verification badge is planned. It is not live yet, so there is no badge URL to embed.

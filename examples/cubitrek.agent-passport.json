@@ -4,7 +4,7 @@
     "domain": "cubitrek.com",
     "legalName": "Cubitrek",
     "displayName": "Cubitrek",
-    "logo": "https://cubitrek.com/cubitrek-logo.svg",
+    "logo": "https://cubitrek.com/icon.jpeg",
     "signingKeyDns": "_agent-passport.cubitrek.com",
     "contact": {
       "email": "hello@cubitrek.com",
@@ -15,7 +15,6 @@
     "id": "cubitrek.com:hire-router-v1",
     "displayName": "Cubitrek Humans-for-Agents Router",
     "purpose": "Route inbound agent engagement requests to the correct senior human role on the Cubitrek roster, within the published authority envelope and the six-hour match SLA.",
-    "model": "claude-sonnet-4.5",
     "endpoints": {
       "mcp": "https://mcp.cubitrek.com",
       "rest": "https://cubitrek.com/api/hire"
@@ -66,12 +65,12 @@
     ],
     "humanReviewLog": true
   },
-  "issuedAt": "2026-04-28T00:00:00Z",
-  "expiresAt": "2026-07-27T00:00:00Z",
+  "issuedAt": "2026-09-15T13:10:52Z",
+  "expiresAt": "2026-12-14T13:10:52Z",
   "revocationListUrl": "https://cubitrek.com/.well-known/revoked-passports.json",
   "signature": {
     "alg": "ed25519",
-    "keyId": "cubitrek-2026-q2",
-    "value": "EoFTXjs9sXqSPIlesShOBA0LYshvxHbjhgZvzHeedfhaqheFNQY4lnL7mbO0wDAF_GpkoVJ6ceBjJ7HJLkPQBw"
+    "keyId": "cubitrek-2026-q3",
+    "value": "_TFy7ia2NhNoWJlG0OXlWKug0f2Q2HGOWkKmYSCy-IUNbbjSqQ39S0GWEOvuyKU30jQ61Wk8BbDHEVmjh8QaAQ"
   }
 }

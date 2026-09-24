@@ -2,12 +2,14 @@
 
 Thanks for your interest. Agent Passport is a public-good spec maintained by [Cubitrek](https://cubitrek.com); contributions are welcome from anyone running, building, or critiquing agent infrastructure.
 
+**Security issues:** please do not open a public issue. Report them privately as described in [SECURITY.md](./SECURITY.md).
+
 ## What we want
 
 - Real-world adoption notes (file an issue under "adopters")
 - Threat-model gaps the spec misses
 - Library implementations in other languages (Python, Go, Rust)
-- Tooling: schema validators, CLI issuers, IDE plugins
+- Tooling: schema validators, IDE plugins, issuer integrations (the reference CLI lives in `packages/verifier/bin`)
 - Editorial improvements to the spec text and examples
 
 ## What to discuss before opening a PR
@@ -23,6 +25,8 @@ Thanks for your interest. Agent Passport is a public-good spec maintained by [Cu
 - Tests in `packages/verifier/test/`
 - Bug fixes in the verifier package
 
+Add a line to [CHANGELOG.md](./CHANGELOG.md) under the unreleased version for any change a spec reader or verifier user would notice.
+
 ## Versioning rules
 
 - `MAJOR.MINOR` for the spec. Breaking changes bump MAJOR and ship under a new path (`spec/agent-passport-v1.0.md`).
@@ -33,10 +37,12 @@ Thanks for your interest. Agent Passport is a public-good spec maintained by [Cu
 
 ```bash
 cd packages/verifier
-npm install
+npm ci
 npm run build
 npm test
 ```
+
+The tests run offline: network calls are stubbed, and signing uses freshly generated keys.
 
 If you change `schemas/agent-passport.schema.json`, also run:
 
@@ -45,6 +51,12 @@ node scripts/sync-schema.mjs
 ```
 
 so the verifier's inlined copy stays in sync.
+
+## Releasing the verifier
+
+Bump `version` in `packages/verifier/package.json`, move the changelog entry out of "unreleased", merge, then push a tag named `verifier-v<version>`. The Release workflow builds, tests, checks the tag against the package version, and publishes to npm with provenance.
+
+The GitHub Action (`action.yml`) is referenced as `Cubitrek/agent-passport@v0`. After a release, move the `v0` tag to the release commit so monitors pick up the new checks.
 
 ## Code of conduct
 
