@@ -259,12 +259,17 @@ export async function checkExecution(
 /**
  * A nonce store for a single process. Executors spread across processes or
  * machines need a shared store with an atomic insert, such as Redis SET NX.
+ *
+ * Expired entries are dropped using this store's own clock. Pass the same
+ * `now` you pass to `checkExecution()` when you inject one, or entries from
+ * an injected clock look expired and stop blocking reuse.
  */
-export function memoryNonceStore(): NonceStore {
+export function memoryNonceStore(opts: { now?: () => Date } = {}): NonceStore {
   const claimed = new Map<string, number>();
+  const clock = opts.now ?? (() => new Date());
   return {
     claim(nonce, expiresAt) {
-      const now = Date.now();
+      const now = clock().getTime();
       for (const [n, expiry] of claimed) if (expiry <= now) claimed.delete(n);
       if (claimed.has(nonce)) return false;
       claimed.set(nonce, Date.parse(expiresAt));

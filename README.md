@@ -19,6 +19,8 @@ A business publishes one signed JSON file at `/.well-known/agent-passport.json`.
 
 The commands below use `npx`. After `npm install -g @cubitrek/agent-passport-verifier` you can type `agent-passport` directly.
 
+> **Not on npm yet.** 0.1.2 publishes when the release workflow runs. Until then, clone this repository and run `npm install && npm run build` in `packages/verifier`, and call the CLI as `node packages/verifier/bin/agent-passport.mjs`.
+
 ## Issue a passport for your agent
 
 ```bash

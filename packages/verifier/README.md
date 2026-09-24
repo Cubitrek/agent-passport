@@ -14,6 +14,8 @@ The library is pure ESM and runs in Node 20+, Cloudflare Workers and modern brow
 npm install @cubitrek/agent-passport-verifier
 ```
 
+> **Not on npm yet.** 0.1.2 publishes when the release workflow runs. Until then, clone this repository and run `npm install && npm run build` in `packages/verifier`, and call the CLI as `node packages/verifier/bin/agent-passport.mjs`.
+
 ## CLI
 
 | Command | What it does |
