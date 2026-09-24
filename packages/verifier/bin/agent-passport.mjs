@@ -23,6 +23,7 @@ import {
   fetchSigningKeys,
   guessEndpointType,
   isoSeconds,
+  requestKeyEntry,
   signAgentPassport,
   validate,
   verifyAgentPassport,
@@ -39,6 +40,7 @@ Issue a passport for your agent
   init                      Create, key and sign a passport in one guided step
   keygen                    Generate an Ed25519 signing key and print its DNS record
   sign <passport.json>      Sign (or re-sign) a passport file
+  request-key               Print the agent.requestKeys entry for a request-signing key
   renew <passport.json>     Re-issue with fresh dates, optionally with a new key
 
 Check a passport
@@ -61,12 +63,19 @@ Prompts for anything you leave out. With --yes, or without a terminal, it lists 
   --currency <USD>              --ceiling <amount>               --human-above <amount>
   --escalation <email|url>      --sla-hours <24>                 --terms-url <url>
   --days <90>                   --kid <keyId>
+  --request-key                 Also generate a request-signing key and publish it in the passport
+  --request-key-out <path>      Where that key goes. Default beside the signing key
   --key <existing.pem>          Sign with an existing key instead of generating one
   --key-out <path>              Where a new key goes. Default ~/.agent-passport/keys/<kid>.pem
   --out-dir <dir>               Where the public files go. Default ./.well-known
   --force                       Overwrite an existing passport file
   --yes                         Never prompt`,
   keygen: "agent-passport keygen --kid <keyId> --out <private-key.pem>",
+  "request-key": `agent-passport request-key --key <private-key.pem> --kid <keyId>
+
+Prints the entry to add to agent.requestKeys in your passport, so receivers can tie
+a signed request to this passport. Re-sign the passport afterwards. Use a key kept
+separate from the passport signing key.`,
   sign: "agent-passport sign <passport.json> --key <private-key.pem> [--kid <keyId>] [--out <signed.json>]",
   renew: `agent-passport renew <passport.json> --key <private-key.pem> [--kid <new keyId>] [--days 90] [--out <file>] [--offline]
 
@@ -94,7 +103,7 @@ Speaks MCP over stdio. To add it to Claude Code:
   claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport-verifier agent-passport mcp`,
 };
 
-const BOOLEAN_FLAGS = new Set(["json", "yes", "force", "offline", "no-links", "no-revocation", "help"]);
+const BOOLEAN_FLAGS = new Set(["json", "yes", "force", "offline", "no-links", "no-revocation", "request-key", "help"]);
 
 const color = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code) => (s) => (color ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -238,6 +247,22 @@ async function init(flags) {
 
   const kid = flags.kid ?? defaultKeyId(domain);
   const days = number(flags.days ?? "90", "days");
+
+  // A request-signing key is separate from the passport signing key: it is used
+  // on every call, so it should never be the key that issues passports.
+  let requestKeys;
+  let requestKeyPath;
+  if (flags["request-key"]) {
+    const defaultDir = flags["key-out"]
+      ? dirname(resolve(expandHome(flags["key-out"])))
+      : join(homedir(), ".agent-passport", "keys");
+    requestKeyPath = resolve(expandHome(flags["request-key-out"] ?? join(defaultDir, `${kid}-request.pem`)));
+    if (existsSync(requestKeyPath)) fail(`${show(requestKeyPath)} already exists. Pass --request-key-out for a different path.`);
+    mkdirSync(dirname(requestKeyPath), { recursive: true, mode: 0o700 });
+    const generated = generateKey(requestKeyPath);
+    requestKeys = [requestKeyEntry({ keyId: `${kid}-request`, publicKeyRaw: generated.publicRaw })];
+  }
+
   const draft = draftAgentPassport({
     domain,
     legalName,
@@ -255,6 +280,7 @@ async function init(flags) {
     termsUrl: termsUrl || undefined,
     validDays: days,
     keyId: kid,
+    requestKeys,
   });
   const checked = validate(draft);
   if (!checked.ok) fail(`The passport is not valid yet:\n${checked.errors.map((e) => `  - ${e.message}`).join("\n")}`);
@@ -282,6 +308,9 @@ async function init(flags) {
   console.log(`${green("✓")} Signed passport  ${show(passportPath)} (valid until ${until})`);
   if (newRevocationList) console.log(`${green("✓")} Revocation list  ${show(revocationPath)}`);
   console.log(`${green("✓")} ${(flags.key ? "Signing key" : "Private key").padEnd(15)}  ${show(keyPath)} ${dim("(keep it secret and backed up; never publish it)")}`);
+  if (requestKeyPath) {
+    console.log(`${green("✓")} ${"Request key".padEnd(15)}  ${show(requestKeyPath)} ${dim("(the agent signs each request with this; published in the passport)")}`);
+  }
   console.log(`\n${bold("Next steps")}`);
   console.log("  1. Add a DNS TXT record");
   console.log(`       Name:   ${signed.issuer.signingKeyDns}`);
@@ -298,6 +327,13 @@ function keygen(flags) {
   console.log(`Private key written to ${flags.out} (mode 600). Keep it out of version control.`);
   console.log("Publish this TXT record at _agent-passport.<your-domain>:");
   console.log(dnsTxtRecord({ keyId: flags.kid, publicKeyRaw: key.publicRaw }));
+}
+
+function requestKey(flags) {
+  if (!flags.key || !flags.kid) fail(HELP["request-key"]);
+  const entry = requestKeyEntry({ keyId: flags.kid, publicKeyRaw: loadKey(flags.key).publicRaw });
+  process.stderr.write("Add this to agent.requestKeys in your passport, then re-sign it:\n");
+  process.stdout.write(json(entry));
 }
 
 async function sign(flags, [file]) {
@@ -426,7 +462,7 @@ async function mcp() {
   await runMcpServer({ version: VERSION });
 }
 
-const COMMANDS = { init, keygen, sign, renew, doctor, verify, authorize: authorizeCommand, mcp };
+const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, mcp };
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);

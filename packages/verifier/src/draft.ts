@@ -4,7 +4,12 @@
  * MCP `draft_agent_passport` tool; sign the result with signAgentPassport.
  */
 
-import type { AgentPassport, PassportCompliance, PassportCounterparties } from "./types.js";
+import type {
+  AgentPassport,
+  PassportCompliance,
+  PassportCounterparties,
+  PassportRequestKey,
+} from "./types.js";
 
 export type EndpointType = "a2a" | "mcp" | "rest";
 
@@ -31,6 +36,8 @@ export interface PassportDraftInput {
   contactEmail?: string;
   contactUrl?: string;
   model?: string;
+  /** Keys the agent signs its requests with, from requestKeyEntry(). */
+  requestKeys?: PassportRequestKey[];
   decisionAuditUrl?: string;
   /** Pass null to publish without a revocation list (not recommended). */
   revocationListUrl?: string | null;
@@ -83,6 +90,7 @@ export function draftAgentPassport(input: PassportDraftInput): AgentPassport {
       endpoints: Object.fromEntries(
         Object.entries(input.endpoints).filter(([, url]) => !!url),
       ),
+      ...(input.requestKeys?.length ? { requestKeys: input.requestKeys } : {}),
     },
     authority: {
       scope: [...new Set(input.scopes.map((s) => s.trim()).filter(Boolean))],

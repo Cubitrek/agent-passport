@@ -88,6 +88,27 @@ if (!check.ok) throw new Error(check.errors.map((e) => e.code).join(", "));
 
 It refuses if the target or arguments changed, the decision expired, it was a deny, an escalation has no person's confirmation, or it was already used.
 
+### Prove who is calling
+
+A passport is public, so verifying one proves what the issuer authorised, not who is contacting you. When the issuer publishes request-signing keys in its passport, check the signature on the request itself:
+
+```typescript
+import { verifyAgentCaller } from "@cubitrek/agent-passport-verifier";
+
+const caller = await verifyAgentCaller(request, verification.passport, { nonceStore });
+if (!caller.ok) return reject(caller.errors);
+```
+
+That verifies a standard HTTP Message Signature (RFC 9421) over the method, host, path, query and body against the keys the passport publishes, and refuses one that is stale, replayed, made with an unpublished key, or that leaves part of the request uncovered. On the agent side, one call signs the request:
+
+```typescript
+import { signAgentRequest } from "@cubitrek/agent-passport-verifier";
+
+const headers = await signAgentRequest({ method: "POST", url, body }, { keyId, privateKey });
+```
+
+Issuers create the key with `agent-passport init --request-key`, or add one to an existing passport with `agent-passport request-key`. Mutual TLS or an OAuth client registered to the issuer bind a caller just as well; the point is to bind it before acting on the passport's authority.
+
 From a shell or a script:
 
 ```bash
@@ -96,7 +117,7 @@ npx -p @cubitrek/agent-passport-verifier agent-passport authorize acme.example -
 
 It exits 0 for allow, 2 for escalate and 1 for deny. Add `--json` for the full decision.
 
-A valid passport proves what the issuer authorised, not who is calling you. Authenticate the caller as the issuer's agent through your transport before acting on it; see spec §7, "What verification proves".
+Without one of those bindings, a valid passport still only proves what the issuer authorised, not who is calling; see spec §7, "What verification proves".
 
 ## Give your AI assistant the tools
 

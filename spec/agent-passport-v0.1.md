@@ -76,6 +76,7 @@ Identifies the specific agent the passport authorises.
 | `purpose` | yes | string | One-sentence description of what this agent exists to do. |
 | `model` | no | string | Underlying model family if disclosed (`claude-sonnet-4.5`, `gpt-5`, `internal`). |
 | `endpoints` | yes | object | At least one of `a2a`, `mcp`, or `rest` must be present. Each is a URL the counterparty can talk to. |
+| `requestKeys` | no | array | Keys the agent signs its requests with, so a receiver can tie a live caller to this passport. A v0.2 proposal, ignored by v0.1 verifiers. See [`proposals/caller-binding.md`](./proposals/caller-binding.md). |
 
 ### 4.4 `authority` (required, object)
 
@@ -190,7 +191,7 @@ A receiving agent or middleware verifies an inbound contact like this:
 
 A passport that fails any of steps 2 to 9 is invalid and the receiving agent must not act on its contents.
 
-**What verification proves.** A valid passport proves that whoever controls `issuer.domain` published this authority envelope for `agent.id`. It does not prove that the party sending the message is that agent: the passport is a public file, and anyone can fetch it and claim to be its subject. v0.1 leaves that binding to the transport. Before acting on a passport's authority, authenticate the caller as the issuer's agent, for example with mutual TLS, an OAuth client registered to the issuer's domain, or HTTP Message Signatures (RFC 9421) made with a key the issuer publishes. Request signing is an open question for v0.2 (§10).
+**What verification proves.** A valid passport proves that whoever controls `issuer.domain` published this authority envelope for `agent.id`. It does not prove that the party sending the message is that agent: the passport is a public file, and anyone can fetch it and claim to be its subject. v0.1 leaves that binding to the transport. Before acting on a passport's authority, authenticate the caller as the issuer's agent, for example with mutual TLS, an OAuth client registered to the issuer's domain, or HTTP Message Signatures (RFC 9421) made with a key the issuer publishes. The last of these is specified in [`proposals/caller-binding.md`](./proposals/caller-binding.md), where the issuer lists the agent's request-signing keys in the passport it already signs, and it is implemented in the reference library as `signAgentRequest()` and `verifyAgentCaller()`.
 
 ## 8. Threat model summary
 
@@ -237,7 +238,7 @@ The reference implementation is [`@cubitrek/agent-passport-verifier`](../package
 - Multi-party signing (consortium passports).
 - Stable revocation gossip protocol so verifiers do not need to poll every issuer.
 - Standard format for the audit-log response at `decisionAudit`, signed with a context string distinct from passport signatures so one can never be accepted as the other.
-- Request signing that binds a live caller to its passport, likely HTTP Message Signatures (RFC 9421) in the style of the IETF Web Bot Auth drafts.
+- Caller binding: `agent.requestKeys` plus signed requests (RFC 9421), in the style of the IETF Web Bot Auth drafts. Specified in [`proposals/caller-binding.md`](./proposals/caller-binding.md) and implemented in the reference library.
 - Several agents per domain: a JSON array at the well-known path, or an index document linking to per-agent passports.
 - A per-passport identifier, so revocation can target one issued passport rather than every passport for an `agent.id`.
 - Registering `agent-passport.json` in the IANA Well-Known URIs registry (RFC 8615). Other projects already publish different documents at the same path.

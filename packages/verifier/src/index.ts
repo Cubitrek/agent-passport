@@ -31,6 +31,34 @@ export type {
   ExecutionCheckResult,
   NonceStore,
 } from "./authorize.js";
+export {
+  CALLER_REQUIRED_COMPONENTS,
+  CALLER_SIGNATURE_TAG,
+  requestKeyEntry,
+  signAgentRequest,
+  verifyAgentCaller,
+} from "./caller.js";
+export type {
+  AgentCallerResult,
+  SignAgentRequestOptions,
+  VerifyAgentCallerOptions,
+} from "./caller.js";
+export {
+  buildSignatureBase,
+  contentDigest,
+  parseSignature,
+  parseSignatureInput,
+  signHttpRequest,
+  verifyHttpRequest,
+} from "./http-signature.js";
+export type {
+  HttpSignatureResult,
+  SignableRequest,
+  SignatureParams,
+  SignedRequestHeaders,
+  SignHttpRequestOptions,
+  VerifyHttpRequestOptions,
+} from "./http-signature.js";
 export { daysUntilExpiry, describePassport } from "./describe.js";
 export { defaultKeyId, draftAgentPassport, guessEndpointType, isoSeconds } from "./draft.js";
 export type { EndpointType, PassportDraftInput } from "./draft.js";
