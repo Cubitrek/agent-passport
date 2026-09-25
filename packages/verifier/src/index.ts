@@ -18,7 +18,7 @@ export { canonicalize, canonicalBytes } from "./canonical.js";
 export { fetchSigningKeys } from "./dns.js";
 export type { SigningKeyLookup, SigningKeyRecord } from "./dns.js";
 export { dnsTxtRecord, signAgentPassport } from "./sign.js";
-export { authorize, checkExecution, memoryNonceStore } from "./authorize.js";
+export { authorize, ceilingError, checkExecution, decide, memoryNonceStore } from "./authorize.js";
 export type {
   AuthorizationRequest,
   AuthorizationResult,
@@ -26,11 +26,43 @@ export type {
   AuthorizeOptions,
   DataClassification,
   Decision,
+  DecideOptions,
   DecisionBinding,
+  DecisionCharge,
   ExecutionCheckOptions,
   ExecutionCheckResult,
   NonceStore,
 } from "./authorize.js";
+export { fromPassport, intersect, localPolicy, passportAuthority } from "./authority.js";
+export type {
+  Authority,
+  AuthorityCeiling,
+  AuthorityCompliance,
+  AuthorityCounterparties,
+  AuthorityHumanGate,
+  AuthorityOrigin,
+  AuthoritySubject,
+  LocalPolicy,
+  SpendWindow,
+} from "./authority.js";
+export { fileSpendLedger, memorySpendLedger } from "./ledger.js";
+export type {
+  LedgerEntry,
+  LedgerQuery,
+  ReserveRequest,
+  ReserveResult,
+  SpendLedger,
+} from "./ledger.js";
+export { buildReceipt, RECEIPT_CONTEXT, signReceipt, verifyReceipt } from "./receipt.js";
+export type {
+  BuildReceiptOptions,
+  Receipt,
+  ReceiptOutcome,
+  ReceiptSink,
+  ReceiptVerification,
+} from "./receipt.js";
+export { checkAndHold, guardedCall, memoryReceiptSink } from "./guard.js";
+export type { CheckAndHoldResult, GuardOptions, GuardResult, Hold } from "./guard.js";
 export {
   CALLER_REQUIRED_COMPONENTS,
   CALLER_SIGNATURE_TAG,

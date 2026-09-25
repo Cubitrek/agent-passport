@@ -1,25 +1,34 @@
 /**
- * Turn a verified passport into a decision about one inbound request:
- * allow, escalate to a human, or deny. This is spec §7 step 10 as code, so
- * every receiver applies the authority envelope the same way.
+ * Turn an authority into a decision about one request: allow, escalate to a
+ * person, or deny.
+ *
+ * `decide()` is the engine and takes an Authority, so the same rules apply
+ * whether the permission came from a counterparty's published passport, from
+ * a policy file on this machine, or from both at once. `authorize()` is the
+ * passport-shaped front door onto it, and is spec §7 step 10 as code.
  *
  * Every decision is bound to the exact request it evaluated: a SHA-256
- * digest over the scope, amount, counterparty details and the concrete
- * action (tool, target, arguments), with a single-use nonce and an expiry.
- * The component that performs the side effect calls checkExecution() with
- * the final values immediately before acting, so an action whose target or
- * arguments changed after authorization is refused.
+ * digest over the subject, the authority it came from, the scope, amount,
+ * counterparty details and the concrete action (tool, target, arguments),
+ * with a single-use nonce and an expiry. The component that performs the
+ * side effect calls checkExecution() with the final values immediately
+ * before acting, so an action whose target or arguments changed after
+ * authorization is refused.
  */
 
+import type { VerificationError, VerifyResult } from "./types.js";
 import type {
-  AgentPassport,
-  PassportCompliance,
-  VerificationError,
-  VerifyResult,
-} from "./types.js";
+  Authority,
+  AuthorityCeiling,
+  AuthorityOrigin,
+  AuthoritySubject,
+  DataClassification,
+} from "./authority.js";
+import { passportAuthority } from "./authority.js";
+import type { SpendLedger } from "./ledger.js";
 import { canonicalJson } from "./canonical.js";
 
-export type DataClassification = NonNullable<PassportCompliance["dataClassification"]>;
+export type { DataClassification };
 
 /** The concrete operation the agent wants performed. */
 export interface AuthorizedAction {
@@ -37,11 +46,11 @@ export interface AuthorizationRequest {
   /** Value of this commitment. Omit for actions with no monetary value. */
   amount?: { amount: number; currency: string };
   /**
-   * Value already committed under this passport, in the same currency.
-   * Needed when spendCeiling.perEngagement is false (a cumulative ceiling).
+   * Value already committed against the ceiling, in the same currency. Used
+   * when no ledger is supplied; a ledger counts it for you.
    */
   priorSpend?: number;
-  /** Your own domain, checked against the passport's counterparties rules. */
+  /** Your own domain, checked against the authority's counterparty rules. */
   counterpartyDomain?: string;
   /** Whether you publish a valid passport yourself. */
   counterpartyHasPassport?: boolean;
@@ -59,7 +68,7 @@ export interface AuthorizationRequest {
 export type Decision = "allow" | "escalate" | "deny";
 
 export interface DecisionBinding {
-  /** "sha256:<hex>" over the canonical request and the passport identity. */
+  /** "sha256:<hex>" over the canonical request, the subject and the authority. */
   digest: string;
   /** Single-use value, claimed by checkExecution() when given a nonceStore. */
   nonce: string;
@@ -68,32 +77,57 @@ export interface DecisionBinding {
   expiresAt: string;
 }
 
+/** The money this decision puts at stake, and whether it is being held. */
+export interface DecisionCharge {
+  amount: number;
+  currency: string;
+  /** The ceilings this amount has to fit under. */
+  ceilings: AuthorityCeiling[];
+  engagementId?: string;
+  /** True when a ledger is already holding the amount for this decision. */
+  reserved: boolean;
+}
+
 export interface AuthorizationResult {
   decision: Decision;
   /** True only when decision is "allow". */
   allow: boolean;
   /** Why. Always at least one entry. */
   reasons: VerificationError[];
-  /** The issuer's human contact, present whenever the answer is not "allow". */
+  /** The human contact, present whenever the answer is not "allow". */
   escalation?: { to: string; slaHours: number };
+  /** Who is acting, as the authority names them. */
+  subject: AuthoritySubject;
+  /** Where the authority came from. */
+  origin: AuthorityOrigin[];
   agentId?: string;
   issuerDomain?: string;
   keyId?: string;
   evaluatedAt: string;
   /** Ties this decision to the exact request it evaluated. */
   binding: DecisionBinding;
+  /** Present when the request carries an amount. */
+  charge?: DecisionCharge;
 }
 
-export interface AuthorizeOptions {
+export interface DecideOptions {
   now?: () => Date;
   /**
    * How long an allow decision may be executed, in seconds. Default 60.
-   * An escalation stays valid for the issuer's humanInLoop.slaHours (and at
-   * least this long), so the person's confirmation applies to this exact
-   * request.
+   * An escalation stays valid for the authority's slaHours (and at least
+   * this long), so the person's confirmation applies to this exact request.
    */
   ttlSeconds?: number;
+  /**
+   * Counts spend and holds it. With one, ceilings are enforced against what
+   * was actually committed rather than against a number the caller supplied.
+   */
+  ledger?: SpendLedger;
+  /** Groups spend for a per-engagement ceiling. */
+  engagementId?: string;
 }
+
+export type AuthorizeOptions = DecideOptions;
 
 /** Records nonces so a decision can be executed once. */
 export interface NonceStore {
@@ -103,7 +137,7 @@ export interface NonceStore {
 
 export interface ExecutionCheckOptions {
   now?: () => Date;
-  /** Set when a person at the issuer confirmed an escalated decision. */
+  /** Set when the person named in the escalation confirmed this decision. */
   humanApproved?: boolean;
   /** Enforces single use. Without one, the same decision can pass more than once. */
   nonceStore?: NonceStore;
@@ -123,47 +157,43 @@ const CLASSIFICATION_RANK: Record<DataClassification, number> = {
   "regulated-pii": 3,
 };
 
-export async function authorize(
-  verification: VerifyResult,
+/**
+ * Decide one request against one authority.
+ *
+ * With a ledger, an allow also reserves the amount, so a second request
+ * evaluated before the first one executes sees the money as already spoken
+ * for. The reservation lapses when the decision expires, and guard() turns
+ * it into spend or gives it back.
+ */
+export async function decide(
+  authority: Authority,
   request: AuthorizationRequest,
-  opts: AuthorizeOptions = {},
+  opts: DecideOptions = {},
 ): Promise<AuthorizationResult> {
   const now = (opts.now ?? (() => new Date()))();
   const evaluatedAt = now.toISOString();
-  // Only a verified passport's contents are trusted: an unverified one could
-  // name any agent and any escalation contact.
-  const passport = verification.ok ? verification.passport : undefined;
-  const identity = {
-    issuerDomain: passport?.issuer.domain,
-    agentId: passport?.agent.id,
-    keyId: passport?.signature.keyId,
-  };
+  const engagementId = opts.engagementId;
 
   let decision: Decision;
   let reasons: VerificationError[];
-  if (!verification.ok || !passport) {
+  const denials: VerificationError[] = [];
+  const escalations: VerificationError[] = [];
+
+  if (authority.refusal) {
     decision = "deny";
-    reasons = [
-      {
-        code: "passport.unverified",
-        message: "The passport did not verify, so it grants no authority.",
-        hint: verification.ok ? undefined : verification.errors.map((e) => e.code).join(", "),
-      },
-    ];
+    reasons = [authority.refusal];
   } else {
-    const denials: VerificationError[] = [];
-    const escalations: VerificationError[] = [];
-    checkScope(passport, request, denials);
-    checkCounterparty(passport, request, denials);
-    checkCompliance(passport, request, denials);
-    checkAmount(passport, request, denials, escalations);
+    checkScope(authority, request, denials);
+    checkCounterparty(authority, request, denials);
+    checkCompliance(authority, request, denials);
+    await checkAmount(authority, request, denials, escalations, opts);
     decision = denials.length ? "deny" : escalations.length ? "escalate" : "allow";
     reasons =
       decision === "allow"
         ? [
             {
               code: "authority.within-envelope",
-              message: `${request.scope} is within the authority ${passport.issuer.displayName} published for this agent.`,
+              message: `${request.scope} is within ${describeOrigin(authority)}.`,
             },
           ]
         : [...denials, ...escalations];
@@ -171,30 +201,76 @@ export async function authorize(
 
   const ttl = opts.ttlSeconds ?? DEFAULT_TTL_SECONDS;
   const lifetime =
-    decision === "escalate" && passport
-      ? Math.max(ttl, passport.authority.humanInLoop.slaHours * 3600)
+    decision === "escalate" && authority.humanInLoop
+      ? Math.max(ttl, authority.humanInLoop.slaHours * 3600)
       : ttl;
+  const binding: DecisionBinding = {
+    digest: await requestDigest(authority.subject, authority.origin, request),
+    nonce: crypto.randomUUID(),
+    issuedAt: evaluatedAt,
+    expiresAt: new Date(now.getTime() + lifetime * 1000).toISOString(),
+  };
+
+  let charge: DecisionCharge | undefined;
+  if (request.amount) {
+    charge = {
+      amount: request.amount.amount,
+      currency: request.amount.currency.toUpperCase(),
+      ceilings: authority.ceilings,
+      engagementId,
+      reserved: false,
+    };
+    // Hold the money only for a decision that could execute right now. An
+    // escalation may sit for hours, so it reserves when the person confirms.
+    if (decision === "allow" && opts.ledger) {
+      const held = await opts.ledger.reserve({
+        subject: authority.subject.agentId,
+        amount: charge.amount,
+        currency: charge.currency,
+        ceilings: charge.ceilings,
+        nonce: binding.nonce,
+        expiresAt: binding.expiresAt,
+        engagementId,
+        at: now,
+      });
+      if (held.ok) charge.reserved = true;
+      else {
+        decision = "deny";
+        reasons = [ceilingError(held.ceiling, held.wouldBe, held.prior)];
+      }
+    }
+  }
 
   return {
     decision,
     allow: decision === "allow",
     reasons,
     escalation:
-      decision === "allow" || !passport
+      decision === "allow" || !authority.humanInLoop
         ? undefined
-        : {
-            to: passport.authority.humanInLoop.escalation,
-            slaHours: passport.authority.humanInLoop.slaHours,
-          },
-    ...identity,
+        : { to: authority.humanInLoop.escalation, slaHours: authority.humanInLoop.slaHours },
+    subject: authority.subject,
+    origin: authority.origin,
+    agentId: authority.refusal ? undefined : authority.subject.agentId,
+    issuerDomain: authority.subject.issuerDomain,
+    keyId: authority.subject.keyId,
     evaluatedAt,
-    binding: {
-      digest: await requestDigest(identity, request),
-      nonce: crypto.randomUUID(),
-      issuedAt: evaluatedAt,
-      expiresAt: new Date(now.getTime() + lifetime * 1000).toISOString(),
-    },
+    binding,
+    charge,
   };
+}
+
+/**
+ * Decide one request against a counterparty's passport. A verification that
+ * failed denies everything, and its contents are not read: an unverified
+ * passport could name any agent and any escalation contact.
+ */
+export async function authorize(
+  verification: VerifyResult,
+  request: AuthorizationRequest,
+  opts: AuthorizeOptions = {},
+): Promise<AuthorizationResult> {
+  return decide(passportAuthority(verification), request, opts);
 }
 
 /**
@@ -224,7 +300,7 @@ export async function checkExecution(
   if (decision.decision === "escalate" && !opts.humanApproved) {
     errors.push({
       code: "execution.needs-human",
-      message: `A person at the issuer must confirm first${decision.escalation ? ` (${decision.escalation.to})` : ""}.`,
+      message: `A person must confirm first${decision.escalation ? ` (${decision.escalation.to})` : ""}.`,
     });
   }
   if (Date.parse(decision.binding.expiresAt) <= now) {
@@ -233,12 +309,24 @@ export async function checkExecution(
       message: `The decision expired at ${decision.binding.expiresAt}. Authorize the final request again.`,
     });
   }
-  const identity = {
+  const subject = decision.subject ?? {
+    agentId: decision.agentId ?? "unknown",
     issuerDomain: decision.issuerDomain,
-    agentId: decision.agentId,
     keyId: decision.keyId,
   };
-  if ((await requestDigest(identity, request)) !== decision.binding.digest) {
+  // agentId, issuerDomain and keyId repeat what subject already says, for
+  // callers that read them directly. Only subject is covered by the digest,
+  // so a copy that disagrees with it means the decision was edited.
+  const altered = (["agentId", "issuerDomain", "keyId"] as const).filter(
+    (field) => decision[field] !== undefined && decision[field] !== subject[field],
+  );
+  if (altered.length) {
+    errors.push({
+      code: "execution.decision-altered",
+      message: `The decision was changed after it was issued: ${altered.join(", ")} no longer matches the subject it was issued for.`,
+    });
+  }
+  if ((await requestDigest(subject, decision.origin ?? [], request)) !== decision.binding.digest) {
     errors.push({
       code: "execution.request-changed",
       message:
@@ -278,13 +366,45 @@ export function memoryNonceStore(opts: { now?: () => Date } = {}): NonceStore {
   };
 }
 
+function describeOrigin(authority: Authority): string {
+  const labels = authority.origin.map((o) => o.label);
+  if (!labels.length) return "the authority in force";
+  if (labels.length === 1) return labels[0]!;
+  return `${labels.join(" and ")}, both of which apply`;
+}
+
+export function ceilingError(
+  ceiling: AuthorityCeiling,
+  wouldBe: number,
+  prior: number,
+): VerificationError {
+  const fmt = (n: number) => `${n.toLocaleString("en-US")} ${ceiling.currency}`;
+  const period =
+    ceiling.window === "engagement"
+      ? "this engagement"
+      : ceiling.window === "total"
+        ? "in total"
+        : `this ${ceiling.window}`;
+  return {
+    code: "amount.above-ceiling",
+    message: `${fmt(wouldBe)} for ${period} exceeds ${fmt(ceiling.amount)} under ${ceiling.label}.`,
+    hint: prior > 0 ? `${fmt(prior)} is already committed or held.` : undefined,
+  };
+}
+
 async function requestDigest(
-  identity: { issuerDomain?: string; agentId?: string; keyId?: string },
+  subject: AuthoritySubject,
+  origin: AuthorityOrigin[],
   request: AuthorizationRequest,
 ): Promise<string> {
   const material = canonicalJson({
     context: DIGEST_CONTEXT,
-    passport: identity,
+    subject: {
+      agentId: subject.agentId,
+      issuerDomain: subject.issuerDomain,
+      keyId: subject.keyId,
+    },
+    origin: origin.map((o) => `${o.kind}:${o.id}`).sort(),
     request: {
       scope: request.scope,
       amount: request.amount
@@ -308,24 +428,26 @@ async function requestDigest(
 }
 
 function checkScope(
-  passport: AgentPassport,
+  authority: Authority,
   request: AuthorizationRequest,
   denials: VerificationError[],
 ): void {
-  if (!passport.authority.scope.includes(request.scope)) {
+  if (!authority.scope.includes(request.scope)) {
     denials.push({
       code: "scope.not-granted",
-      message: `The passport does not grant ${request.scope}. Granted: ${passport.authority.scope.join(", ")}.`,
+      message: `${describeOrigin(authority)} does not grant ${request.scope}. Granted: ${
+        authority.scope.length ? authority.scope.join(", ") : "nothing"
+      }.`,
     });
   }
 }
 
 function checkCounterparty(
-  passport: AgentPassport,
+  authority: Authority,
   request: AuthorizationRequest,
   denials: VerificationError[],
 ): void {
-  const rules = passport.counterparties ?? {};
+  const rules = authority.counterparties ?? {};
   const openTo = rules.openTo ?? "verified-passports";
   const domain = request.counterpartyDomain?.trim().toLowerCase().replace(/\.$/, "");
   const listed = (list?: string[]) =>
@@ -354,17 +476,19 @@ function checkCounterparty(
 }
 
 function checkCompliance(
-  passport: AgentPassport,
+  authority: Authority,
   request: AuthorizationRequest,
   denials: VerificationError[],
 ): void {
-  const compliance = passport.compliance ?? {};
+  const compliance = authority.compliance ?? {};
   if (request.region && compliance.regions) {
     const region = request.region.toUpperCase();
-    if (!compliance.regions.includes(region)) {
+    if (!compliance.regions.some((r) => r.toUpperCase() === region)) {
       denials.push({
         code: "region.not-cleared",
-        message: `The agent is not cleared to operate in ${region}. Cleared: ${compliance.regions.join(", ")}.`,
+        message: `The agent is not cleared to operate in ${region}. Cleared: ${
+          compliance.regions.length ? compliance.regions.join(", ") : "nowhere"
+        }.`,
       });
     }
   }
@@ -381,51 +505,76 @@ function checkCompliance(
   }
 }
 
-function checkAmount(
-  passport: AgentPassport,
+async function checkAmount(
+  authority: Authority,
   request: AuthorizationRequest,
   denials: VerificationError[],
   escalations: VerificationError[],
-): void {
+  opts: DecideOptions,
+): Promise<void> {
   if (!request.amount) return;
-  const { amount, currency } = request.amount;
-  const { spendCeiling, humanInLoop } = passport.authority;
-  const fmt = (n: number, c: string) => `${n.toLocaleString("en-US")} ${c}`;
+  const { currency } = request.amount;
+  const amount = request.amount.amount;
+  const upper = currency.toUpperCase();
+  const now = (opts.now ?? (() => new Date()))();
+  let mismatched = false;
+  let overCeiling = false;
 
-  if (currency !== spendCeiling.currency) {
-    escalations.push({
-      code: "amount.currency-unsupported",
-      message: `The spend ceiling is in ${spendCeiling.currency}, not ${currency}; a human must confirm the conversion.`,
-    });
-    return;
-  }
-
-  let committed = amount;
-  if (!spendCeiling.perEngagement) {
-    if (request.priorSpend === undefined) {
+  for (const ceiling of authority.ceilings) {
+    if (ceiling.currency.toUpperCase() !== upper) {
+      if (!mismatched) {
+        mismatched = true;
+        escalations.push({
+          code: "amount.currency-unsupported",
+          message: `${ceiling.label} is in ${ceiling.currency}, not ${currency}; a person must confirm the conversion.`,
+        });
+      }
+      continue;
+    }
+    // A ledger knows the real prior total. Without one, the caller's
+    // priorSpend is all there is, and for a window wider than a single
+    // engagement, not supplying it means nobody has counted.
+    let prior: number;
+    if (opts.ledger && (ceiling.window !== "engagement" || opts.engagementId)) {
+      prior = await opts.ledger.outstanding({
+        subject: authority.subject.agentId,
+        currency: upper,
+        window: ceiling.window,
+        engagementId: opts.engagementId,
+        at: now,
+      });
+    } else if (request.priorSpend !== undefined) {
+      prior = request.priorSpend;
+    } else if (ceiling.window === "engagement") {
+      prior = 0;
+    } else {
       escalations.push({
         code: "amount.cumulative-unknown",
-        message: "The spend ceiling is cumulative across engagements; pass priorSpend so it can be checked.",
+        message: `${ceiling.label} covers ${ceiling.window === "total" ? "everything committed so far" : `a whole ${ceiling.window}`}; pass a ledger or priorSpend so it can be checked.`,
       });
-      return;
+      continue;
     }
-    committed += request.priorSpend;
+    if (prior + amount > ceiling.amount) {
+      denials.push(ceilingError(ceiling, prior + amount, prior));
+      overCeiling = true;
+    }
   }
 
-  if (committed > spendCeiling.amount) {
-    denials.push({
-      code: "amount.above-ceiling",
-      message: `${fmt(committed, currency)} exceeds the ${fmt(spendCeiling.amount, currency)} ceiling. Only a human at the issuer can commit to this.`,
-    });
-  } else if (humanInLoop.above.currency !== currency) {
-    escalations.push({
-      code: "amount.currency-unsupported",
-      message: `The human-in-the-loop threshold is in ${humanInLoop.above.currency}, not ${currency}.`,
-    });
-  } else if (amount > humanInLoop.above.amount) {
+  // An amount that is refused outright does not also need "and a person
+  // would have had to confirm it": it is not happening either way.
+  const gate = authority.humanInLoop;
+  if (!gate || overCeiling) return;
+  if (gate.above.currency.toUpperCase() !== upper) {
+    if (!mismatched) {
+      escalations.push({
+        code: "amount.currency-unsupported",
+        message: `The human-in-the-loop threshold is in ${gate.above.currency}, not ${currency}.`,
+      });
+    }
+  } else if (amount > gate.above.amount) {
     escalations.push({
       code: "amount.above-human-threshold",
-      message: `${fmt(amount, currency)} is above the ${fmt(humanInLoop.above.amount, currency)} threshold, so a human at the issuer must confirm before commitment.`,
+      message: `${amount.toLocaleString("en-US")} ${currency} is above the ${gate.above.amount.toLocaleString("en-US")} ${currency} threshold, so a person must confirm before commitment.`,
     });
   }
 }

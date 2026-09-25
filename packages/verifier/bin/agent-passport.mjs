@@ -14,15 +14,19 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import {
-  authorize,
+  decide,
   defaultKeyId,
   describePassport,
   diagnoseAgentPassport,
   dnsTxtRecord,
   draftAgentPassport,
   fetchSigningKeys,
+  fileSpendLedger,
   guessEndpointType,
+  intersect,
   isoSeconds,
+  localPolicy,
+  passportAuthority,
   requestKeyEntry,
   signAgentPassport,
   validate,
@@ -46,10 +50,15 @@ Issue a passport for your agent
 Check a passport
   doctor <domain>           Health-check a published passport, with fixes
   verify <domain|file>      Verify a passport the way a counterparty does
-  authorize <domain|file>   Decide allow, escalate or deny for one request
+
+Decide and guard one action
+  authorize [domain|file]   Allow, escalate or deny, against a passport,
+                            your own --policy file, or both at once
+  settle <nonce>            Commit or release the amount a decision held
 
 Connect an AI client
-  mcp                       Run the MCP server on stdio
+  mcp                       Run the MCP server on stdio, optionally enforcing
+                            a --policy on every decision it makes
 
 Run "agent-passport help <command>" for flags. Add --json to doctor, verify or authorize for machine output.`;
 
@@ -87,7 +96,8 @@ Exits 1 when any check fails.`,
   verify: `agent-passport verify <domain | passport.json> [--public-key <base64>] [--no-revocation] [--json]
 
 --public-key pins the issuer key instead of looking it up in DNS.`,
-  authorize: `agent-passport authorize <domain | passport.json> --scope <subject.verb>
+  authorize: `agent-passport authorize [<domain | passport.json>] --scope <subject.verb>
+    [--policy <policy.json>] [--ledger <spend.jsonl>] [--engagement <id>]
     [--amount <n>] [--currency <USD>] [--prior-spend <n>] [--as <your-domain>]
     [--region <CC>] [--data <public|internal|confidential-business|regulated-pii>]
     [--tool <name> [--target <id>] [--args <json>]] [--ttl <seconds>]
@@ -95,15 +105,56 @@ Exits 1 when any check fails.`,
 
 Exits 0 for allow, 2 for escalate, 1 for deny. The decision is bound to the exact
 request, including --tool, --target and --args, and expires after --ttl seconds
-(default 60; escalations last for the issuer's response window). Whatever performs
-the action must call checkExecution() with the final values before acting.`,
-  mcp: `agent-passport mcp
+(default 60; escalations last for the response window). Whatever performs the
+action must call checkExecution() with the final values before acting.
+
+Authority comes from a counterparty's passport, from your own policy file, or
+from both, in which case the tighter of the two binds:
+
+  authorize acme.example --scope payments.transfer --amount 400
+  authorize --policy treasury.json --scope payments.transfer --amount 400
+  authorize acme.example --policy treasury.json --scope payments.transfer --amount 400
+
+A policy file is the same envelope, written by you rather than published:
+
+  {
+    "id": "treasury-local",
+    "agentId": "ops-bot",
+    "scope": ["payments.transfer"],
+    "limits": [{ "amount": 5000, "currency": "USD", "window": "day" }],
+    "humanInLoop": { "above": { "amount": 500, "currency": "USD" },
+                     "escalation": "finance@yourcompany.example" }
+  }
+
+--ledger keeps the running total in a file, so a cap over a day, a month or a
+whole engagement is counted rather than merely published. Without one, a cap
+wider than a single engagement escalates instead of passing unchecked.`,
+  settle: `agent-passport settle <nonce> --ledger <spend.jsonl> [--commit | --release] [--json]
+
+Closes out the amount an authorize decision is holding. Run it after the action
+either happened or did not:
+
+  agent-passport settle <nonce> --ledger spend.jsonl --commit    # it happened
+  agent-passport settle <nonce> --ledger spend.jsonl --release   # it did not
+
+A hold that is never settled lapses on its own when the decision expires, so a
+crashed run frees its own headroom. If the action was attempted and the result
+was lost, commit it: counting spend that may not have happened only makes the
+next decision more cautious, while not counting spend that did raises the cap.`,
+  mcp: `agent-passport mcp [--policy <policy.json>] [--ledger <spend.jsonl>]
 
 Speaks MCP over stdio. To add it to Claude Code:
-  claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport-verifier agent-passport mcp`,
+  claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport-verifier agent-passport mcp
+
+With --policy, every authorize_agent_action call is decided against that policy
+as well as against any counterparty passport, and the tighter of the two binds.
+The policy is read once, from this flag. Nothing the model sends can widen it,
+and authorize_agent_action no longer needs a domain, so the same server guards
+your own agent's actions and inbound ones. Add --ledger to count spend across
+calls, so a cap over a day or a month is enforced rather than restated.`,
 };
 
-const BOOLEAN_FLAGS = new Set(["json", "yes", "force", "offline", "no-links", "no-revocation", "request-key", "help"]);
+const BOOLEAN_FLAGS = new Set(["json", "yes", "force", "offline", "no-links", "no-revocation", "request-key", "commit", "release", "help"]);
 
 const color = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code) => (s) => (color ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -420,17 +471,33 @@ async function verify(flags, [target]) {
   for (const w of result.warnings) console.log(`  ${yellow(w.code)}  ${w.message}`);
 }
 
+function policyFromFile(path) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(resolve(path), "utf8"));
+  } catch (err) {
+    fail(`Could not read the policy at ${path}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return localPolicy(parsed);
+}
+
 async function authorizeCommand(flags, [target]) {
-  if (!target || typeof flags.scope !== "string") fail(HELP.authorize);
+  const hasPolicy = typeof flags.policy === "string";
+  if ((!target && !hasPolicy) || typeof flags.scope !== "string") fail(HELP.authorize);
   if (flags.data !== undefined && !DATA_CLASSES.includes(flags.data)) fail(`--data must be one of ${DATA_CLASSES.join(", ")}`);
   const currency = (flags.currency ?? "USD").toUpperCase();
-  const verification = await verifyAgentPassport(targetOptions(target, flags));
+
+  // Authority from the counterparty, from this machine, or from both.
+  const published = target ? passportAuthority(await verifyAgentPassport(targetOptions(target, flags))) : undefined;
+  const mine = hasPolicy ? policyFromFile(flags.policy) : undefined;
+  const authority = published && mine ? intersect(published, mine) : (published ?? mine);
+
   const action =
     typeof flags.tool === "string"
       ? { tool: flags.tool, target: flags.target, args: flags.args !== undefined ? jsonFlag(flags.args, "args") : undefined }
       : undefined;
-  const decision = await authorize(
-    verification,
+  const decision = await decide(
+    authority,
     {
       scope: flags.scope,
       amount: flags.amount !== undefined ? { amount: number(flags.amount, "amount"), currency } : undefined,
@@ -440,7 +507,11 @@ async function authorizeCommand(flags, [target]) {
       dataClassification: flags.data,
       action,
     },
-    { ttlSeconds: flags.ttl !== undefined ? number(flags.ttl, "ttl") : undefined },
+    {
+      ttlSeconds: flags.ttl !== undefined ? number(flags.ttl, "ttl") : undefined,
+      ledger: typeof flags.ledger === "string" ? fileSpendLedger(resolve(flags.ledger)) : undefined,
+      engagementId: flags.engagement,
+    },
   );
   process.exitCode = { allow: 0, escalate: 2, deny: 1 }[decision.decision];
   if (flags.json) {
@@ -452,17 +523,42 @@ async function authorizeCommand(flags, [target]) {
   console.log(`${label}  ${what}`);
   for (const r of decision.reasons) console.log(`  ${dim(r.code)}  ${r.message}${r.hint ? dim(` (${r.hint})`) : ""}`);
   if (decision.escalation) {
-    console.log(`  Human contact at the issuer: ${decision.escalation.to}, responds within ${decision.escalation.slaHours}h`);
+    console.log(`  Human contact: ${decision.escalation.to}, responds within ${decision.escalation.slaHours}h`);
   }
+  console.log(dim(`  Authority: ${decision.origin.map((o) => o.label).join(" and ")}`));
   console.log(dim(`  Bound to ${decision.binding.digest}, valid until ${decision.binding.expiresAt}`));
+  if (decision.charge?.reserved) {
+    console.log(dim(`  ${decision.charge.amount.toLocaleString("en-US")} ${decision.charge.currency} is held in the ledger until this decision is settled or expires`));
+  }
 }
 
-async function mcp() {
+async function settle(flags, [nonce]) {
+  if (!nonce || typeof flags.ledger !== "string") fail(HELP.settle);
+  if (flags.commit === flags.release) fail("Pass exactly one of --commit or --release.");
+  const ledger = fileSpendLedger(resolve(flags.ledger));
+  const before = (await ledger.entries()).find((e) => e.nonce === nonce);
+  if (!before) fail(`No hold with nonce ${nonce} in ${flags.ledger}.`);
+  if (flags.commit) await ledger.commit(nonce);
+  else await ledger.release(nonce);
+  const after = (await ledger.entries()).find((e) => e.nonce === nonce);
+  if (flags.json) {
+    process.stdout.write(json({ nonce, was: before.state, now: after.state, amount: before.amount, currency: before.currency }));
+    return;
+  }
+  const verb = after.state === before.state ? `was already ${after.state}` : `is now ${after.state}`;
+  console.log(`${before.amount.toLocaleString("en-US")} ${before.currency} ${verb}.`);
+}
+
+async function mcp(flags) {
   const { runMcpServer } = await import("./mcp.mjs");
-  await runMcpServer({ version: VERSION });
+  await runMcpServer({
+    version: VERSION,
+    policy: typeof flags.policy === "string" ? policyFromFile(flags.policy) : undefined,
+    ledger: typeof flags.ledger === "string" ? fileSpendLedger(resolve(flags.ledger)) : undefined,
+  });
 }
 
-const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, mcp };
+const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, settle, mcp };
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);

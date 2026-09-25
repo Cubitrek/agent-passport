@@ -7,11 +7,13 @@
 
 import { createInterface } from "node:readline";
 import {
-  authorize,
+  decide,
   describePassport,
   diagnoseAgentPassport,
   draftAgentPassport,
   guessEndpointType,
+  intersect,
+  passportAuthority,
   validate,
   verifyAgentPassport,
 } from "../dist/index.js";
@@ -128,6 +130,27 @@ export const TOOLS = [
   },
 ];
 
+/** With a local policy in force, a domain is no longer required to decide. */
+function toolsFor(config = {}) {
+  if (!config.policy) return TOOLS;
+  return TOOLS.map((tool) =>
+    tool.name === "authorize_agent_action"
+      ? {
+          ...tool,
+          description: `${tool.description} A local policy set by the operator of this server also applies, and always binds: where the two differ, the tighter of the two wins. Omit domain to decide against the local policy alone.`,
+          inputSchema: { ...tool.inputSchema, required: ["scope"] },
+        }
+      : tool,
+  );
+}
+
+function instructionsFor(config = {}) {
+  if (!config.policy) return INSTRUCTIONS;
+  return `${INSTRUCTIONS} This server also enforces a local policy set by its operator: ${config.policy.origin
+    .map((o) => o.label)
+    .join(" and ")}. You cannot change or widen it.`;
+}
+
 const HANDLERS = {
   async verify_agent_passport(args) {
     const domain = requireString(args, "domain");
@@ -143,11 +166,13 @@ const HANDLERS = {
     };
   },
 
-  async authorize_agent_action(args) {
-    const domain = requireString(args, "domain");
-    const verification = await verifyAgentPassport({ domain });
+  async authorize_agent_action(args, config = {}) {
+    const domain = config.policy ? optionalString(args, "domain") : requireString(args, "domain");
+    const published = domain ? passportAuthority(await verifyAgentPassport({ domain })) : undefined;
+    const authority =
+      published && config.policy ? intersect(published, config.policy) : (published ?? config.policy);
     const tool = optionalString(args, "tool");
-    const decision = await authorize(verification, {
+    const decision = await decide(authority, {
       action: tool ? { tool, target: optionalString(args, "target"), args: args.arguments } : undefined,
       scope: requireString(args, "scope"),
       amount: typeof args.amount === "number" ? { amount: args.amount, currency: String(args.currency ?? "USD").toUpperCase() } : undefined,
@@ -155,15 +180,20 @@ const HANDLERS = {
       counterpartyDomain: optionalString(args, "my_domain"),
       region: optionalString(args, "region"),
       dataClassification: DATA_CLASSES.includes(args.data_classification) ? args.data_classification : undefined,
-    });
+    }, { ledger: config.ledger, engagementId: optionalString(args, "engagement_id") });
+    const who = domain ? `by ${domain}'s agent` : "under the local policy";
     const lines = [
-      `${decision.decision.toUpperCase()}: ${args.scope}${typeof args.amount === "number" ? ` for ${args.amount} ${args.currency ?? "USD"}` : ""} by ${domain}'s agent`,
+      `${decision.decision.toUpperCase()}: ${args.scope}${typeof args.amount === "number" ? ` for ${args.amount} ${args.currency ?? "USD"}` : ""} ${who}`,
       ...decision.reasons.map((r) => `- ${r.code}: ${r.message}${r.hint ? ` (${r.hint})` : ""}`),
     ];
-    if (decision.escalation) lines.push(`Human contact at the issuer: ${decision.escalation.to} (responds within ${decision.escalation.slaHours}h)`);
+    lines.push(`Authority: ${decision.origin.map((o) => o.label).join(" and ")}.`);
+    if (decision.escalation) lines.push(`Human contact: ${decision.escalation.to} (responds within ${decision.escalation.slaHours}h)`);
     lines.push(
-      `Bound to ${decision.binding.digest} until ${decision.binding.expiresAt}. The system that performs the action must check the final values against this decision (checkExecution) immediately before acting.`,
+      `Bound to ${decision.binding.digest} until ${decision.binding.expiresAt}. The system that performs the action must check the final values against this decision (guardedCall) immediately before acting.`,
     );
+    if (decision.charge?.reserved) {
+      lines.push(`${decision.charge.amount} ${decision.charge.currency} is held against the running total until this decision is settled or expires.`);
+    }
     return { text: lines.join("\n"), structured: decision };
   },
 
@@ -220,7 +250,19 @@ const HANDLERS = {
   },
 };
 
-export async function runMcpServer({ input = process.stdin, output = process.stdout, version = "0.0.0" } = {}) {
+/**
+ * The local policy, if any, is supplied by whoever started the server, never
+ * by the model through a tool argument. A model that could pass its own
+ * policy could hand itself any authority it liked.
+ */
+export async function runMcpServer({
+  input = process.stdin,
+  output = process.stdout,
+  version = "0.0.0",
+  policy,
+  ledger,
+} = {}) {
+  const config = { policy, ledger };
   const send = (message) => output.write(`${JSON.stringify(message)}\n`);
   const inflight = new Set();
   const lines = createInterface({ input, crlfDelay: Infinity });
@@ -234,7 +276,7 @@ export async function runMcpServer({ input = process.stdin, output = process.std
       send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
       continue;
     }
-    const work = handle(message, version)
+    const work = handle(message, version, config)
       .then((reply) => reply && send(reply))
       .catch((err) => send({ jsonrpc: "2.0", id: message?.id ?? null, error: { code: -32603, message: String(err?.message ?? err) } }));
     inflight.add(work);
@@ -243,7 +285,7 @@ export async function runMcpServer({ input = process.stdin, output = process.std
   await Promise.all(inflight);
 }
 
-async function handle(message, version) {
+async function handle(message, version, config = {}) {
   if (!message || typeof message !== "object" || Array.isArray(message)) {
     return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } };
   }
@@ -259,18 +301,18 @@ async function handle(message, version) {
         protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : SUPPORTED_PROTOCOL_VERSIONS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "agent-passport", title: "Agent Passport", version },
-        instructions: INSTRUCTIONS,
+        instructions: instructionsFor(config),
       });
     }
     case "ping":
       return reply({});
     case "tools/list":
-      return reply({ tools: TOOLS });
+      return reply({ tools: toolsFor(config) });
     case "tools/call": {
       const handler = HANDLERS[params.name];
       if (!handler) return fail(-32602, `Unknown tool: ${params.name}`);
       try {
-        const { text, structured } = await handler(params.arguments ?? {});
+        const { text, structured } = await handler(params.arguments ?? {}, config);
         return reply({ content: [{ type: "text", text }], structuredContent: structured, isError: false });
       } catch (err) {
         return reply({ content: [{ type: "text", text: `Error: ${err?.message ?? err}` }], isError: true });

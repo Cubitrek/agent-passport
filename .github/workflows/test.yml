@@ -30,7 +30,7 @@ jobs:
       - name: Check published package contents
         run: npm pack --dry-run
 
-      - name: Execution-boundary harness
+      - name: Execution-boundary harness (passport, local policy, both)
         working-directory: ${{ github.workspace }}
         run: node examples/execution-boundary/harness.mjs
 

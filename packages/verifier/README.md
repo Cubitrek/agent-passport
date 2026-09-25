@@ -24,18 +24,19 @@ npm install @cubitrek/agent-passport-verifier
 | `agent-passport renew <file> --key <pem>` | Re-dates and re-signs a passport, and confirms DNS carries the key |
 | `agent-passport doctor <domain>` | Health check with fixes; exits 1 on any failure |
 | `agent-passport verify <domain or file>` | Verifies and explains a passport in plain English |
-| `agent-passport authorize <domain or file> --scope <s> [--amount <n>] [--tool <t> --target <id> --args <json>]` | Allow, escalate or deny, bound to the exact action; exits 0, 2 or 1 |
+| `agent-passport authorize [<domain or file>] --scope <s> [--policy <file>] [--ledger <file>] [--amount <n>] [--tool <t> --target <id> --args <json>]` | Allow, escalate or deny, bound to the exact action; exits 0, 2 or 1. Authority comes from the passport, your own policy file, or both |
+| `agent-passport settle <nonce> --ledger <file> --commit \| --release` | Closes out the amount a decision is holding |
 | `agent-passport keygen --kid <id> --out <pem>` | Generates a signing key and prints its TXT record |
 | `agent-passport request-key --key <pem> --kid <id>` | Prints the `agent.requestKeys` entry so callers can be bound to the passport |
 | `agent-passport sign <file> --key <pem>` | Signs a passport file |
 | `agent-passport mcp` | Runs the MCP server on stdio |
 
-`agent-passport help <command>` lists every flag. `doctor`, `verify` and `authorize` take `--json`.
+`agent-passport help <command>` lists every flag. `doctor`, `verify`, `authorize` and `settle` take `--json`.
 
 ## Verify, then authorize
 
 ```typescript
-import { authorize, checkExecution, memoryNonceStore, verifyAgentPassport } from "@cubitrek/agent-passport-verifier";
+import { authorize, guardedCall, memoryNonceStore, verifyAgentPassport } from "@cubitrek/agent-passport-verifier";
 
 const verification = await verifyAgentPassport({ domain: "acme.example" });
 
@@ -48,19 +49,70 @@ const decision = await authorize(verification, {
 // decision.decision is "allow", "escalate" or "deny".
 // decision.reasons explains it; decision.escalation names the issuer's human.
 
-// Immediately before the side effect, with the values about to be executed:
+// The side effect goes through the guard, with the values about to be executed:
 const nonceStore = memoryNonceStore(); // one per process; share one across machines
-const check = await checkExecution(decision, finalRequest, { nonceStore });
-if (!check.ok) throw new Error(check.errors.map((e) => e.code).join(", "));
+const result = await guardedCall(decision, finalRequest, () => provider.order(finalRequest), {
+  nonceStore,
+});
+if (result.outcome !== "executed") console.warn(result.reasons ?? result.error);
 ```
+
+`checkExecution()` is the same check on its own, for code that cannot express the effect as one function; `checkAndHold()` adds the ledger and the receipt in two steps.
 
 ### Bind the decision to the action
 
 `authorize()` binds every decision to the exact request: a SHA-256 digest over the scope, amount, counterparty and the concrete tool, target and arguments, plus the passport identity, with a nonce and an expiry. Allow decisions last 60 seconds by default (`ttlSeconds`); an escalation lasts for the issuer's response window so the person's confirmation applies to this exact request.
 
-`checkExecution()` recomputes the digest from the final values and refuses if anything changed, the decision expired, it was a deny, an escalation has no confirmation (`humanApproved`), or it was already used (with a `nonceStore`). `memoryNonceStore()` covers one process; executors on several machines need a shared store with an atomic insert, such as Redis `SET NX`.
+`guardedCall()` recomputes the digest from the final values and refuses if anything changed, the decision expired, it was a deny, an escalation has no confirmation (`humanApproved`), or it was already used (with a `nonceStore`). `memoryNonceStore()` covers one process; executors on several machines need a shared store with an atomic insert, such as Redis `SET NX`.
 
 The binding is unsigned, so it protects where the component that decides and the component that acts trust each other. Carrying a decision across organisations is a [v0.2 proposal](https://github.com/Cubitrek/agent-passport/blob/main/spec/proposals/execution-binding.md).
+
+### Authority from somewhere other than a passport
+
+`decide()` is the engine, and it takes an `Authority`: the envelope of scopes, ceilings, human threshold, counterparty rules and compliance, plus the subject it applies to. `authorize()` is `decide()` with `passportAuthority()` in front of it.
+
+```typescript
+import { decide, intersect, localPolicy, passportAuthority } from "@cubitrek/agent-passport-verifier";
+
+const mine = localPolicy({
+  id: "treasury-local",
+  agentId: "ops-bot",
+  scope: ["payments.transfer"],
+  limits: [{ amount: 5_000, currency: "USD", window: "day" }],
+  humanInLoop: { above: { amount: 500, currency: "USD" }, escalation: "finance@yourcompany.example" },
+});
+
+// Your own rules alone, with no counterparty involved:
+await decide(mine, request, { ledger });
+
+// Or both, where the tighter of the two binds:
+await decide(intersect(passportAuthority(verification), mine), request, { ledger });
+```
+
+`intersect()` grants only what both grant: scopes intersect, every ceiling from both sides is enforced, the lower human threshold wins, blocklists merge, allowlists intersect, and the stricter openness rule and data classification apply. A refusal on either side refuses everything.
+
+### Counting what has been spent
+
+A ceiling nothing counts is a statement of intent. A `SpendLedger` records what a subject has committed, over one engagement, a UTC day, a UTC month or all time.
+
+```typescript
+import { fileSpendLedger, memorySpendLedger } from "@cubitrek/agent-passport-verifier";
+
+const ledger = fileSpendLedger(".agent-passport/spend.jsonl");
+const decision = await decide(mine, request, { ledger, engagementId: "inv-2291" });
+```
+
+An allow *reserves* its amount, so a second decision taken before the first executes sees the money as already spoken for. `guardedCall()` turns the reservation into spend once the effect has happened, or releases it when it has not. A reservation lapses with the decision holding it, so a crashed run frees its own headroom.
+
+A cap wider than a single engagement, with no ledger and no `priorSpend`, escalates (`amount.cumulative-unknown`) rather than passing. Nothing is counting it, so it is a question for a person.
+
+When the effect throws, the outcome is `unknown`: the provider may have acted before the connection died. The reservation is committed by default, because over-counting only makes the next decision more cautious, while under-counting quietly raises the ceiling. Pass `onUnknown: "release"` where the provider is transactional.
+
+### Receipts
+
+Every decision that reaches the guard leaves a record. `signReceipt()` signs one with Ed25519 and `verifyReceipt()` checks it.
+
+A receipt carries no payload: the tool name, the scope and the amount are in it, the target and the arguments are not. The binding digest already covers those, so anyone holding the original request can prove it is the one the receipt refers to, while the receipt on its own discloses nothing.
 
 ### What `verifyAgentPassport` proves
 
@@ -155,9 +207,17 @@ Speaks MCP protocol versions 2024-11-05 through 2025-11-25 over stdio, with no d
 | Function | Returns |
 | --- | --- |
 | `verifyAgentPassport(options)` | `{ ok: true, passport, warnings }` or `{ ok: false, errors, warnings, passport? }`. A malformed passport produces errors, never an exception. |
-| `authorize(verification, request, options?)` | Promise of `{ decision, allow, reasons, escalation?, agentId, issuerDomain, keyId, evaluatedAt, binding }` |
-| `checkExecution(decision, finalRequest, options?)` | Promise of `{ ok: true }` or `{ ok: false, errors }` |
-| `memoryNonceStore()` | A single-process `NonceStore` for `checkExecution` |
+| `decide(authority, request, options?)` | Promise of `{ decision, allow, reasons, escalation?, subject, origin, agentId, issuerDomain, keyId, evaluatedAt, binding, charge? }` |
+| `authorize(verification, request, options?)` | `decide()` against a verified passport |
+| `passportAuthority(verification)` | The `Authority` a verified passport grants. A failed verification grants nothing |
+| `localPolicy(policy)` | The `Authority` a policy you wrote grants |
+| `intersect(a, b)` | The `Authority` both grant, and nothing more |
+| `guardedCall(decision, finalRequest, effect, options?)` | Promise of `{ outcome: "executed", value, receipt }`, `{ outcome: "blocked", reasons, receipt }` or `{ outcome: "unknown", error, receipt }` |
+| `checkAndHold(decision, finalRequest, options?)` | The same gate in two steps: `{ ok: true, hold }` or `{ ok: false, reasons, receipt }` |
+| `checkExecution(decision, finalRequest, options?)` | The binding check alone: `{ ok: true }` or `{ ok: false, errors }` |
+| `memorySpendLedger()`, `fileSpendLedger(path)` | A `SpendLedger` for one process; a fleet needs a shared store with an atomic reserve |
+| `buildReceipt`, `signReceipt`, `verifyReceipt` | Receipts, and their Ed25519 signatures |
+| `memoryReceiptSink()`, `memoryNonceStore()` | Single-process stores for tests and small deployments |
 | `diagnoseAgentPassport(options)` | `{ ok, domain, url, checks, passport?, verification? }` |
 | `describePassport(passport, now?)` | Plain-English summary |
 | `draftAgentPassport(input)` | An unsigned, schema-valid passport |
@@ -174,9 +234,9 @@ Speaks MCP protocol versions 2024-11-05 through 2025-11-25 over stdio, with no d
 
 `verifyAgentPassport` options: `domain` or `passport`; `resolveSignerPublicKey` (`"dns"`, `{ publicKeyB64 }` or a function); `checkRevocation` (default true); `revocationFailure` (`"warn"` or `"error"`); `timeoutMs` (default 10000); `signal`; `now`.
 
-`authorize` request: `scope`; optional `amount`, `priorSpend`, `counterpartyDomain`, `counterpartyHasPassport`, `region`, `dataClassification`, and `action` (`tool`, `target`, `args`). Options: `ttlSeconds` (default 60), `now`.
+`decide` request: `scope`; optional `amount`, `priorSpend`, `counterpartyDomain`, `counterpartyHasPassport`, `region`, `dataClassification`, and `action` (`tool`, `target`, `args`). Options: `ttlSeconds` (default 60), `ledger`, `engagementId`, `now`.
 
-`checkExecution` options: `humanApproved`, `nonceStore`, `now`.
+`guardedCall` options: `humanApproved`, `nonceStore`, `ledger`, `engagementId`, `receipts`, `signReceiptsWith`, `onUnknown` (`"commit"` by default), `now`.
 
 ## Result codes
 
@@ -210,7 +270,8 @@ Authorization reasons:
 | Code | Decision |
 | --- | --- |
 | `authority.within-envelope` | allow |
-| `amount.above-human-threshold`, `amount.currency-unsupported`, `amount.cumulative-unknown` | escalate |
+| `amount.above-human-threshold`, `amount.currency-unsupported` | escalate |
+| `amount.cumulative-unknown` | escalate: a cap over a day, a month or everything, with nothing counting it |
 | `passport.unverified`, `scope.not-granted`, `amount.above-ceiling`, `counterparty.blocked`, `counterparty.not-allowlisted`, `counterparty.passport-required`, `region.not-cleared`, `data.classification-exceeds` | deny |
 
 Execution checks (`checkExecution`):
@@ -223,6 +284,8 @@ Execution checks (`checkExecution`):
 | `execution.needs-human` | An escalation without `humanApproved`. |
 | `execution.replayed` | The nonce store has already seen this decision. |
 | `execution.unbound` | The decision has no binding. |
+| `execution.decision-altered` | `agentId`, `issuerDomain` or `keyId` no longer matches the subject the decision was issued for. |
+| `execution.result-unknown` | The effect was attempted and the result was lost. Recorded on the receipt, not a refusal. |
 
 Caller binding (`verifyAgentCaller`):
 
@@ -234,6 +297,15 @@ Caller binding (`verifyAgentCaller`):
 | `httpsig.invalid` | The method, target, headers or body are not what was signed. |
 | `httpsig.digest-mismatch` | Content-Digest does not match the body. |
 | `httpsig.weak-coverage` | The signature leaves part of the request, or the body, uncovered. |
+
+### Receipts
+
+| Code | Meaning |
+| --- | --- |
+| `receipt.unsigned` | The receipt carries no signature. |
+| `receipt.wrong-context` | Not an Agent Passport receipt. |
+| `receipt.signature-malformed` | The signature is not 64 base64url bytes. |
+| `receipt.signature-invalid` | The receipt was changed after it was signed. |
 | `httpsig.expired`, `httpsig.created-in-future`, `httpsig.lifetime-too-long` | The signature is outside its window. |
 | `httpsig.replayed` | The nonce store has already seen this signed request. |
 
