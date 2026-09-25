@@ -209,10 +209,7 @@ async function run() {
     const sink = provider();
     const decision = await authorize(verification, actionA, { now, ttlSeconds: 30 });
     const later = () => new Date(NOW.getTime() + 60_000);
-    const check = await checkExecution(decision, actionA, { now: later });
-    const outcome = check.ok
-      ? (sink.execute(actionA.action), { executed: true, reason: null })
-      : { executed: false, reason: check.errors.map((e) => e.code).join(", ") };
+    const outcome = await guardedExecute(decision, actionA, sink, { now: later });
     record("expired", "blocked", outcome, sink);
   }
 

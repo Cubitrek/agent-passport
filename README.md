@@ -187,6 +187,7 @@ agent-passport/
     acme.agent-passport.json     # Procurement agent for a fictional buyer
     globex.agent-passport.json   # Sales agent for a fictional seller
     cubitrek.agent-passport.json # Cubitrek's own published passport
+    execution-boundary/          # Harness: one authorized action, eight executions
   packages/
     verifier/                    # @cubitrek/agent-passport-verifier: library, CLI, MCP server
   action.yml                     # GitHub Action: scheduled health check
