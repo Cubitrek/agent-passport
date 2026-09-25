@@ -74,6 +74,26 @@
             { "required": ["mcp"] },
             { "required": ["rest"] }
           ]
+        },
+        "requestKeys": {
+          "type": "array",
+          "description": "Keys this agent signs its HTTP requests with (RFC 9421), so a receiver can tie a live caller to this passport.",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["keyId", "alg", "publicKey"],
+            "additionalProperties": false,
+            "properties": {
+              "keyId": { "type": "string", "minLength": 1 },
+              "alg": { "type": "string", "const": "ed25519" },
+              "publicKey": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{43}$",
+                "description": "Raw 32-byte Ed25519 public key, base64url, unpadded."
+              }
+            }
+          }
         }
       }
     },

@@ -56,9 +56,9 @@ This document expands the §8 summary in the canonical spec. It enumerates the f
 
 **Scenario.** An attacker contacts Globex, claims to be Acme's procurement agent, and points to Acme's real, valid passport at `acme.example`.
 
-**Mitigation.** None inside the passport. The passport is a public file, so verifying it proves what Acme authorised, not who is calling. v0.1 requires the verifier to authenticate the caller as Acme's agent through the transport (spec §7, "What verification proves"): mutual TLS, an OAuth client registered to Acme's domain, or HTTP Message Signatures (RFC 9421) with a key Acme publishes.
+**Mitigation.** Nothing in the passport document alone: it is public, so verifying it proves what Acme authorised, not who is calling. The verifier must authenticate the caller as Acme's agent (spec §7, "What verification proves"). Where both sides already run it, mutual TLS or an OAuth client registered to Acme works. Where they do not, Acme lists its agent's request-signing keys in the passport and the agent signs every request (RFC 9421); the reference library does this with `signAgentRequest()` and `verifyAgentCaller()`, which reject a signature that is stale, replayed, made with an unpublished key, or that leaves the target or body uncovered. See [`proposals/caller-binding.md`](./proposals/caller-binding.md).
 
-**Residual risk.** High for any deployment that treats "passport verified" as "caller verified". Request signing bound to the passport is planned for v0.2.
+**Residual risk.** High for any deployment that treats "passport verified" as "caller verified" without one of those bindings. A request key is online by definition, so a compromised agent host can sign requests until the passport is re-issued without that key; keep passport lifetimes short and the passport signing key elsewhere.
 
 ### 1.8 Signing key published outside the issuer's zone
 

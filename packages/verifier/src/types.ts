@@ -34,6 +34,18 @@ export interface PassportAgent {
   purpose: string;
   model?: string;
   endpoints: { a2a?: string; mcp?: string; rest?: string };
+  /**
+   * Keys this agent signs its requests with (RFC 9421 HTTP Message
+   * Signatures). They let a receiver tie a live caller to this passport.
+   */
+  requestKeys?: PassportRequestKey[];
+}
+
+export interface PassportRequestKey {
+  keyId: string;
+  alg: "ed25519";
+  /** Raw 32-byte Ed25519 public key, base64url, unpadded. */
+  publicKey: string;
 }
 
 export interface PassportAuthority {

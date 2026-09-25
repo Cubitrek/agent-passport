@@ -26,6 +26,7 @@ npm install @cubitrek/agent-passport-verifier
 | `agent-passport verify <domain or file>` | Verifies and explains a passport in plain English |
 | `agent-passport authorize <domain or file> --scope <s> [--amount <n>] [--tool <t> --target <id> --args <json>]` | Allow, escalate or deny, bound to the exact action; exits 0, 2 or 1 |
 | `agent-passport keygen --kid <id> --out <pem>` | Generates a signing key and prints its TXT record |
+| `agent-passport request-key --key <pem> --kid <id>` | Prints the `agent.requestKeys` entry so callers can be bound to the passport |
 | `agent-passport sign <file> --key <pem>` | Signs a passport file |
 | `agent-passport mcp` | Runs the MCP server on stdio |
 
@@ -83,6 +84,22 @@ await verifyAgentPassport({
 // Fail closed when the revocation list cannot be read.
 await verifyAgentPassport({ domain: "acme.example", revocationFailure: "error" });
 ```
+
+## Prove who is calling
+
+A passport says what a company authorised. It does not say who is contacting you, because anyone can quote a public file. When the issuer publishes request keys in its passport, verify the request itself:
+
+```typescript
+import { signAgentRequest, verifyAgentCaller } from "@cubitrek/agent-passport-verifier";
+
+// The agent, calling out:
+const headers = await signAgentRequest({ method: "POST", url, body }, { keyId, privateKey });
+
+// The receiver, after verifying the passport:
+const caller = await verifyAgentCaller({ method, url, headers, body }, verification.passport, { nonceStore });
+```
+
+The signature is a standard HTTP Message Signature (RFC 9421) covering the method, authority, path, query and body digest, tagged `agent-passport`, valid for 60 seconds by default and single-use with a nonce store. Keys live in `agent.requestKeys` inside the passport, so the chain runs from the issuer's DNS key to the passport to the request with nothing else to publish. Keep the request key separate from the passport signing key: it is online on every call.
 
 ## Issue a passport from code
 
@@ -146,6 +163,10 @@ Speaks MCP protocol versions 2024-11-05 through 2025-11-25 over stdio, with no d
 | `draftAgentPassport(input)` | An unsigned, schema-valid passport |
 | `signAgentPassport(passport, privateKey)` | A copy with `signature.value` set; set `signature.keyId` first |
 | `dnsTxtRecord({ keyId, publicKeyRaw })` | The TXT record value |
+| `signAgentRequest(request, options)` | Headers that sign an outgoing request as the agent |
+| `verifyAgentCaller(request, passport, options?)` | Promise of `{ ok: true, keyId }` or `{ ok: false, errors }` |
+| `requestKeyEntry({ keyId, publicKeyRaw })` | The `agent.requestKeys` entry for a public key |
+| `buildSignatureBase`, `signHttpRequest`, `verifyHttpRequest` | RFC 9421 pieces, for other profiles |
 | `validate(value)` | JSON Schema result only |
 | `canonicalize(passport)`, `canonicalBytes(passport)` | The bytes that are signed (spec §5) |
 | `fetchSigningKeys({ signingKeyDns })` | Parsed `v=ap1` records and whether DNSSEC validated them |
@@ -202,6 +223,19 @@ Execution checks (`checkExecution`):
 | `execution.needs-human` | An escalation without `humanApproved`. |
 | `execution.replayed` | The nonce store has already seen this decision. |
 | `execution.unbound` | The decision has no binding. |
+
+Caller binding (`verifyAgentCaller`):
+
+| Code | Meaning |
+| --- | --- |
+| `caller.no-request-keys` | The passport publishes no request keys, so a caller cannot be tied to it. |
+| `httpsig.missing`, `httpsig.malformed` | No Agent Passport signature on the request, or it could not be parsed. |
+| `httpsig.unknown-key` | The signature names a key the passport does not publish. |
+| `httpsig.invalid` | The method, target, headers or body are not what was signed. |
+| `httpsig.digest-mismatch` | Content-Digest does not match the body. |
+| `httpsig.weak-coverage` | The signature leaves part of the request, or the body, uncovered. |
+| `httpsig.expired`, `httpsig.created-in-future`, `httpsig.lifetime-too-long` | The signature is outside its window. |
+| `httpsig.replayed` | The nonce store has already seen this signed request. |
 
 ## Behaviour notes
 
