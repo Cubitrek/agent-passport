@@ -30,6 +30,10 @@ jobs:
       - name: Check published package contents
         run: npm pack --dry-run
 
+      - name: Execution-boundary harness
+        working-directory: ${{ github.workspace }}
+        run: node examples/execution-boundary/harness.mjs
+
   schema-sync:
     runs-on: ubuntu-latest
     steps:
