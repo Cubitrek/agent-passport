@@ -14,6 +14,7 @@ A business publishes one signed JSON file at `/.well-known/agent-passport.json`.
 | --- | --- |
 | Running an agent that deals with other companies | [Issue a passport](#issue-a-passport-for-your-agent) |
 | Receiving agent traffic: an API, an MCP server, a sales or procurement flow | [Decide what an inbound agent may do](#decide-what-an-inbound-agent-may-do) |
+| Running your own agent and wanting limits on it | [Set limits on your own agent](#set-limits-on-your-own-agent) |
 | Using Claude, Cursor or another MCP client | [Give your AI assistant the tools](#give-your-ai-assistant-the-tools) |
 | Responsible for a published passport | [Keep it healthy](#keep-it-healthy) |
 
@@ -79,14 +80,20 @@ switch (decision.decision) {
 
 `authorize` applies the whole authority envelope: scope, spend ceiling, the human-in-the-loop threshold, cumulative ceilings, counterparty rules, regions and data classification. An unverified passport is always a deny. Every result carries reason codes, so it doubles as an audit record.
 
-Each decision is also bound to the exact request, including the concrete tool, target and arguments, and expires after 60 seconds (or the issuer's response window for an escalation). Whatever performs the side effect checks the final values immediately before acting:
+Each decision is also bound to the exact request, including the concrete tool, target and arguments, and expires after 60 seconds (or the issuer's response window for an escalation). Whatever performs the side effect goes through the guard, with the final values:
 
 ```typescript
-const check = await checkExecution(decision, finalRequest, { nonceStore });
-if (!check.ok) throw new Error(check.errors.map((e) => e.code).join(", "));
+import { guardedCall } from "@cubitrek/agent-passport-verifier";
+
+const result = await guardedCall(decision, finalRequest, () => provider.transfer(finalRequest), {
+  ledger,
+  nonceStore,
+  receipts,
+});
+if (result.outcome !== "executed") console.warn(result.receipt);
 ```
 
-It refuses if the target or arguments changed, the decision expired, it was a deny, an escalation has no person's confirmation, or it was already used.
+It refuses if the target or arguments changed, the decision expired, it was a deny, an escalation has no person's confirmation, or it was already used. Whichever way it goes, it settles the amount against the ledger and writes a receipt.
 
 ### Prove who is calling
 
@@ -118,6 +125,50 @@ npx -p @cubitrek/agent-passport-verifier agent-passport authorize acme.example -
 It exits 0 for allow, 2 for escalate and 1 for deny. Add `--json` for the full decision.
 
 Without one of those bindings, a valid passport still only proves what the issuer authorised, not who is calling; see spec §7, "What verification proves".
+
+## Set limits on your own agent
+
+The same envelope works with no counterparty in sight. Write the rules down and the decision engine applies them exactly as it applies a passport's:
+
+```json
+{
+  "id": "treasury-local",
+  "agentId": "ops-bot",
+  "scope": ["payments.transfer"],
+  "limits": [{ "amount": 5000, "currency": "USD", "window": "day" }],
+  "humanInLoop": { "above": { "amount": 500, "currency": "USD" },
+                   "escalation": "finance@yourcompany.example" }
+}
+```
+
+```bash
+npx -p @cubitrek/agent-passport-verifier agent-passport authorize \
+  --policy treasury.json --ledger spend.jsonl \
+  --scope payments.transfer --amount 400 --tool payments.create_transfer
+```
+
+`--ledger` keeps the running total, so a cap over a day, a month or a whole engagement is counted rather than merely published. An allow holds its amount until you close it out:
+
+```bash
+npx -p @cubitrek/agent-passport-verifier agent-passport settle <nonce> --ledger spend.jsonl --commit
+```
+
+A hold that is never settled lapses when the decision expires, so a crashed run frees its own headroom. Without a ledger, a cap wider than a single engagement escalates instead of passing unchecked: nothing is counting it, so it is a question for a person rather than a quiet yes.
+
+Pass a domain **and** a policy to run both at once. Scopes intersect, every ceiling is enforced, and the lower human threshold wins, so what a counterparty published is a maximum it will be held to, never permission to exceed your own rules:
+
+```bash
+npx -p @cubitrek/agent-passport-verifier agent-passport authorize acme.example \
+  --policy treasury.json --scope payments.transfer --amount 5000
+```
+
+In code that is `localPolicy()`, `passportAuthority()` and `intersect()`, all feeding the same `decide()`. See [`spec/proposals/local-policy.md`](./spec/proposals/local-policy.md).
+
+### Receipts
+
+Every decision that reaches the guard leaves a record: who acted, under which authority, what was decided and why, the binding digest, and what became of it. Receipts can be signed with Ed25519 and checked by anyone holding the public key.
+
+A receipt carries no payload. The tool name, the scope and the amount are in it; the target and the arguments are not. The binding digest already covers those, so anyone holding the original request can prove it is the one the receipt refers to, while the receipt on its own discloses nothing. That makes it safe to hand to an auditor or a counterparty.
 
 ## Give your AI assistant the tools
 
@@ -181,13 +232,14 @@ agent-passport/
     agent-passport-v0.1.md       # Canonical spec text
     threat-model.md              # Failure modes the spec addresses
     proposals/attestations.md    # Proposal: third-party test results, signed by the tester
+    proposals/local-policy.md    # Proposal: local policy, counted ceilings, receipts
   schemas/
     agent-passport.schema.json   # JSON Schema (draft 2020-12)
   examples/
     acme.agent-passport.json     # Procurement agent for a fictional buyer
     globex.agent-passport.json   # Sales agent for a fictional seller
     cubitrek.agent-passport.json # Cubitrek's own published passport
-    execution-boundary/          # Harness: one authorized action, eight executions
+    execution-boundary/          # Harness: one action, many executions, three authorities
   packages/
     verifier/                    # @cubitrek/agent-passport-verifier: library, CLI, MCP server
   action.yml                     # GitHub Action: scheduled health check

@@ -76,6 +76,22 @@ This document expands the §8 summary in the canonical spec. It enumerates the f
 
 **Residual risk.** The binding is unsigned, so it protects only where the component that decides and the component that acts trust each other, usually within one system. Carrying a decision across a boundary needs a signed receipt (proposal: [`proposals/execution-binding.md`](./proposals/execution-binding.md)). Single use is only as strong as the nonce store: a per-process store does not cover executors spread across machines.
 
+### 1.10 A ceiling nobody counts
+
+**Scenario.** A passport publishes a $50,000 ceiling. An agent makes forty $2,000 commitments. Every individual check passes, because each one is inside the ceiling and nothing is adding them up. The same happens in miniature when two requests are evaluated in the same instant: both read the old total, both fit, and together they do not.
+
+**Mitigation.** The reference library takes a `SpendLedger` that records what a subject has committed, over one engagement, a UTC day, a UTC month or all time. A decision that could execute now reserves its amount, so a decision taken before the first one executes sees the money as already spoken for; the guard turns the reservation into spend once the effect has happened, or releases it when it has not. A cap wider than a single engagement, with nothing counting it, escalates (`amount.cumulative-unknown`) instead of passing. See [`proposals/local-policy.md`](./proposals/local-policy.md).
+
+**Residual risk.** The in-process ledger covers one process. A fleet needs a shared store whose reserve step is a single atomic operation. A ceiling a passport publishes per engagement still only binds across a run when the receiver says which engagement each action belongs to. And when an effect is attempted and the result is lost, no ledger can know whether the money moved: the library commits the reservation by default, which over-counts rather than under-counts.
+
+### 1.11 Authority widened by the thing it governs
+
+**Scenario.** A guard is driven by the agent it is supposed to constrain. If the limits arrive as a parameter of the call being checked, a model that can write that parameter can grant itself anything, and an injected instruction in a document it read can do it on the model's behalf.
+
+**Mitigation.** Local policy is read once, at startup, from the operator: a `--policy` file on `agent-passport mcp`, or an `Authority` passed to `runMcpServer()`. It is never a tool argument. Where a counterparty passport also applies, the two are intersected, so neither side can widen the other. A test asserts that a policy supplied in the tool call changes no verdict.
+
+**Residual risk.** Whoever can write the policy file or restart the process with different flags sets the limits. That is file-system and process control, which is outside what this layer can see.
+
 ## 2. Threats explicitly out of scope
 
 ### 2.1 Transport security

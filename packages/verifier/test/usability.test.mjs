@@ -512,7 +512,7 @@ test("a nonce store makes each decision single-use", async () => {
 test("a decision cannot be relabelled for another agent", async () => {
   const decision = await authorize(acmeVerified(), order());
   const relabelled = { ...decision, agentId: "acme.example:treasury-v1" };
-  assert.deepEqual(codes((await checkExecution(relabelled, order())).errors), ["execution.request-changed"]);
+  assert.deepEqual(codes((await checkExecution(relabelled, order())).errors), ["execution.decision-altered"]);
 });
 
 test("arguments that have no unambiguous JSON form are refused", async () => {
