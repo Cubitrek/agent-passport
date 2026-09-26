@@ -20,7 +20,7 @@
  * opt in.
  */
 
-import { checkAndHold, decide, toolRequest } from "../dist/index.js";
+import { checkAndHold, checkApproval, decide, toolRequest } from "../dist/index.js";
 
 const EVENT = "PreToolUse";
 
@@ -49,6 +49,7 @@ export async function runHook({
   receipts,
   signReceiptsWith,
   engagementId,
+  approvals,
   skipPromptOnAllow = false,
   input = process.stdin,
   output = process.stdout,
@@ -99,6 +100,17 @@ export async function runHook({
     const decision = await decide(authority, mapping.request, { ledger, engagementId });
     const why = decision.reasons.map((r) => r.message).join(" ");
 
+    // Claude Code can ask the person itself, so this surface does not open
+    // approval requests. It does honour one that already exists, which is how
+    // something approved out of band goes through without asking twice.
+    let preApproved = false;
+    if (decision.decision === "escalate" && approvals) {
+      const found = await checkApproval(approvals.state(), decision.binding.digest, {
+        approvers: policy.approvers,
+      });
+      preApproved = found.ok;
+    }
+
     if (decision.decision === "deny") {
       await checkAndHold(decision, mapping.request, { ledger, receipts, signReceiptsWith, engagementId });
       return deny(`Refused by the policy "${policy.id}": ${why}`);
@@ -121,7 +133,7 @@ export async function runHook({
     }
     await gate.hold.commit();
 
-    if (decision.decision === "escalate") {
+    if (decision.decision === "escalate" && !preApproved) {
       const contact = decision.escalation ? ` The policy names ${decision.escalation.to}.` : "";
       return ask(`${why}${contact}`);
     }

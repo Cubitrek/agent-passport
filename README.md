@@ -207,6 +207,30 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}' | agent-pas
 
 A `deny` comes back when it is wired up correctly. Nothing coming back means it is not.
 
+### When a call needs a person
+
+An escalation is a dead end without somewhere to answer it. Add `--approvals` and it becomes a question:
+
+```bash
+agent-passport guard --policy treasury.json --ledger spend.jsonl \
+  --approvals approvals.jsonl -- npx -y @stripe/mcp
+```
+
+The agent is refused with a reference, you answer it, and the same call goes through next time:
+
+```bash
+agent-passport approvals --approvals approvals.jsonl
+agent-passport approve 4ad06d81 --approvals approvals.jsonl --by faizan
+```
+
+An approval buys **one exact call**: the digest that ties it to that call covers the subject, the authority, the amount, the tool, the target and every argument, so a penny's difference no longer matches. It is good once, and only until the policy's response window closes.
+
+Worth being blunt about who may answer: an agent that can run a shell can run `agent-passport approve`. Name the keys that count, and an unsigned or wrongly signed answer is refused:
+
+```json
+"approvers": [{ "keyId": "approver-2026", "alg": "ed25519", "publicKey": "..." }]
+```
+
 ### See what it has been doing
 
 ```bash

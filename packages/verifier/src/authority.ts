@@ -20,6 +20,7 @@ import type {
   VerifyResult,
 } from "./types.js";
 import type { ToolRule, UnmatchedPolicy } from "./tool-policy.js";
+import type { ApproverKey } from "./approval.js";
 
 export type DataClassification = NonNullable<PassportCompliance["dataClassification"]>;
 
@@ -114,6 +115,13 @@ export interface LocalPolicy {
   tools?: ToolRule[];
   /** What happens to a tool no rule matches. Default "escalate". */
   unmatched?: UnmatchedPolicy;
+  /**
+   * Whose answer counts when a call is escalated. Name keys here and an
+   * unsigned approval is refused, which is what stops an agent that can run a
+   * shell from approving its own escalations. Leave it out only where the
+   * agent cannot write the approvals file.
+   */
+  approvers?: ApproverKey[];
 }
 
 /**
@@ -231,6 +239,17 @@ export function localPolicy(policy: LocalPolicy): Authority {
   }
   if (policy.unmatched !== undefined && !["allow", "escalate", "deny"].includes(policy.unmatched)) {
     throw new TypeError(`unmatched in policy ${policy.id} must be allow, escalate or deny`);
+  }
+  for (const key of policy.approvers ?? []) {
+    if (!key?.keyId || typeof key.keyId !== "string") {
+      throw new TypeError(`every approver in policy ${policy.id} needs a keyId`);
+    }
+    if (key.alg !== "ed25519") {
+      throw new TypeError(`approver "${key.keyId}" in policy ${policy.id} must use alg ed25519`);
+    }
+    if (typeof key.publicKey !== "string" || !key.publicKey) {
+      throw new TypeError(`approver "${key.keyId}" in policy ${policy.id} needs a publicKey`);
+    }
   }
   return {
     subject: { agentId: policy.agentId ?? policy.id },
