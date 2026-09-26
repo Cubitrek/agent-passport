@@ -240,6 +240,7 @@ agent-passport/
     globex.agent-passport.json   # Sales agent for a fictional seller
     cubitrek.agent-passport.json # Cubitrek's own published passport
     execution-boundary/          # Harness: one action, many executions, three authorities
+    end-to-end/                  # Two companies, one purchase, the whole chain in one run
   packages/
     verifier/                    # @cubitrek/agent-passport-verifier: library, CLI, MCP server
   action.yml                     # GitHub Action: scheduled health check
