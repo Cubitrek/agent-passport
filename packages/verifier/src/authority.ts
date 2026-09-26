@@ -19,6 +19,7 @@ import type {
   VerificationError,
   VerifyResult,
 } from "./types.js";
+import type { ToolRule, UnmatchedPolicy } from "./tool-policy.js";
 
 export type DataClassification = NonNullable<PassportCompliance["dataClassification"]>;
 
@@ -106,6 +107,13 @@ export interface LocalPolicy {
   humanInLoop?: { above: { amount: number; currency: string }; escalation: string; slaHours?: number };
   counterparties?: AuthorityCounterparties;
   compliance?: AuthorityCompliance;
+  /**
+   * How tool calls map onto the scopes above. Only a guard that sees real tool
+   * calls uses these; decide() never reads them.
+   */
+  tools?: ToolRule[];
+  /** What happens to a tool no rule matches. Default "escalate". */
+  unmatched?: UnmatchedPolicy;
 }
 
 /**
@@ -183,6 +191,27 @@ export function localPolicy(policy: LocalPolicy): Authority {
     throw new TypeError("a local policy needs a scope list, even an empty one");
   }
   const label = policy.label ?? `the local policy ${policy.id}`;
+  // Validate the tool rules here, at load, so a policy that cannot enforce
+  // what it claims fails before it has waved anything through.
+  for (const rule of policy.tools ?? []) {
+    if (!rule || typeof rule.match !== "string" || !rule.match) {
+      throw new TypeError(`every tool rule in policy ${policy.id} needs a match pattern`);
+    }
+    if (typeof rule.scope !== "string" || !rule.scope) {
+      throw new TypeError(`the tool rule "${rule.match}" in policy ${policy.id} needs a scope`);
+    }
+    if (!policy.scope.includes(rule.scope)) {
+      throw new TypeError(
+        `the tool rule "${rule.match}" in policy ${policy.id} uses scope "${rule.scope}", which the policy does not grant`,
+      );
+    }
+    if (rule.amountUnit !== undefined && rule.amountUnit !== "major" && rule.amountUnit !== "minor") {
+      throw new TypeError(`amountUnit on "${rule.match}" in policy ${policy.id} must be major or minor`);
+    }
+  }
+  if (policy.unmatched !== undefined && !["allow", "escalate", "deny"].includes(policy.unmatched)) {
+    throw new TypeError(`unmatched in policy ${policy.id} must be allow, escalate or deny`);
+  }
   return {
     subject: { agentId: policy.agentId ?? policy.id },
     origin: [{ kind: "policy", id: policy.id, label }],

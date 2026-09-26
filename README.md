@@ -128,7 +128,60 @@ Without one of those bindings, a valid passport still only proves what the issue
 
 ## Set limits on your own agent
 
-The same envelope works with no counterparty in sight. Write the rules down and the decision engine applies them exactly as it applies a passport's:
+The same envelope works with no counterparty in sight, and this half needs nobody else to adopt anything.
+
+### Put a guard in front of the tools
+
+`guard` runs an MCP server behind your policy. Every tool call is decided first, and a call the policy refuses is never forwarded, so the agent cannot go around it:
+
+```bash
+claude mcp add stripe -- npx -p @cubitrek/agent-passport-verifier agent-passport guard \
+  --policy ~/.agent-passport/treasury.json \
+  --ledger ~/.agent-passport/spend.jsonl \
+  --receipts ~/.agent-passport/receipts.jsonl \
+  -- npx -y @stripe/mcp
+```
+
+The policy needs a `tools` list, because only you know that `stripe.create_charge({ amount: 800000 })` means 8,000 USD:
+
+```json
+{
+  "id": "treasury-local",
+  "agentId": "claude-code",
+  "scope": ["payments.charge", "payments.read"],
+  "limits": [{ "amount": 5000, "currency": "USD", "window": "day" }],
+  "humanInLoop": { "above": { "amount": 500, "currency": "USD" },
+                   "escalation": "finance@yourcompany.example" },
+  "tools": [
+    { "match": "stripe.create_charge", "scope": "payments.charge",
+      "amountFrom": "args.amount", "amountUnit": "minor" },
+    { "match": "stripe.list_*", "scope": "payments.read" }
+  ],
+  "unmatched": "escalate"
+}
+```
+
+A 9,000 USD charge against that policy comes back to the agent as a refusal naming the cap, and the Stripe server never hears about it. A tool no rule covers is escalated rather than waved through, and a rule whose `amountFrom` finds no number is refused, because a call whose value cannot be read cannot be held to a limit.
+
+The guard also annotates the tool list, so the model knows the rules before it tries. A worked policy with every field explained is in [`examples/policies`](./examples/policies).
+
+### See what it has been doing
+
+```bash
+npx -p @cubitrek/agent-passport-verifier agent-passport log --receipts ~/.agent-passport/receipts.jsonl
+```
+
+```
+when                 outcome   tool                  amount      why
+2026-09-26 18:03:24  blocked   stripe.create_charge  9,000 USD   amount.above-ceiling
+2026-09-26 18:03:24  executed  stripe.create_charge  1,500 USD   authority.within-envelope
+
+2 decisions: 1 blocked, 1 executed. 1,500 committed.
+```
+
+### Or decide one action at a time
+
+Write the rules down and the decision engine applies them exactly as it applies a passport's:
 
 ```json
 {
@@ -239,6 +292,7 @@ agent-passport/
     acme.agent-passport.json     # Procurement agent for a fictional buyer
     globex.agent-passport.json   # Sales agent for a fictional seller
     cubitrek.agent-passport.json # Cubitrek's own published passport
+    policies/                    # A worked policy, with every field explained
     execution-boundary/          # Harness: one action, many executions, three authorities
     end-to-end/                  # Two companies, one purchase, the whole chain in one run
   packages/

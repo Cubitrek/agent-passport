@@ -31,7 +31,7 @@ import {
   validate,
   verifyAgentPassport,
 } from "../dist/index.js";
-import { fileSpendLedger } from "../dist/ledger-node.js";
+import { fileReceiptSink, fileSpendLedger, readReceipts } from "../dist/node.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(here, "../package.json"), "utf8")).version;
@@ -55,6 +55,11 @@ Decide and guard one action
   authorize [domain|file]   Allow, escalate or deny, against a passport,
                             your own --policy file, or both at once
   settle <nonce>            Commit or release the amount a decision held
+
+Put limits on your own agent
+  guard --policy <f> -- <cmd>   Run an MCP server behind your policy, so every
+                                tool call is decided before it reaches it
+  log --receipts <f>            What the guard has decided, and what it cost
 
 Connect an AI client
   mcp                       Run the MCP server on stdio, optionally enforcing
@@ -141,6 +146,47 @@ A hold that is never settled lapses on its own when the decision expires, so a
 crashed run frees its own headroom. If the action was attempted and the result
 was lost, commit it: counting spend that may not have happened only makes the
 next decision more cautious, while not counting spend that did raises the cap.`,
+  guard: `agent-passport guard --policy <policy.json> --ledger <spend.jsonl>
+    [--receipts <receipts.jsonl>] [--engagement <id>] -- <command to run>
+
+Runs an MCP server behind your policy. Every tools/call is decided first, and a
+call the policy refuses is never sent on, so the agent cannot go around it.
+
+  claude mcp add stripe -- agent-passport guard \\
+    --policy ~/.agent-passport/treasury.json --ledger ~/.agent-passport/spend.jsonl \\
+    --receipts ~/.agent-passport/receipts.jsonl -- npx -y @stripe/mcp
+
+The policy needs a "tools" list saying which scope each tool exercises and
+where its value lives, because nothing else can know that a charge of 800000
+means 8,000 USD:
+
+  {
+    "id": "treasury-local",
+    "agentId": "claude-code",
+    "scope": ["payments.charge", "payments.read"],
+    "limits": [{ "amount": 5000, "currency": "USD", "window": "day" }],
+    "humanInLoop": { "above": { "amount": 500, "currency": "USD" },
+                     "escalation": "finance@yourcompany.example" },
+    "tools": [
+      { "match": "stripe.create_charge", "scope": "payments.charge",
+        "amountFrom": "args.amount", "amountUnit": "minor" },
+      { "match": "stripe.list_*", "scope": "payments.read" }
+    ],
+    "unmatched": "escalate"
+  }
+
+The first matching rule wins. A tool no rule matches is handled by "unmatched":
+escalate (the default), deny, or allow. A rule that names amountFrom and finds
+no number there is refused, because a call whose value cannot be read cannot be
+held to a limit.
+
+--ledger counts spending across calls and across runs, and is required whenever
+the policy sets a limit. --receipts records every decision, which
+"agent-passport log" reads back.`,
+  log: `agent-passport log --receipts <receipts.jsonl> [--json]
+
+What the guard has decided, and what it cost. One line per decision: when, what
+happened, which tool, how much, and why.`,
   mcp: `agent-passport mcp [--policy <policy.json>] [--ledger <spend.jsonl>]
 
 Speaks MCP over stdio. To add it to Claude Code:
@@ -570,6 +616,68 @@ async function settle(flags, [nonce]) {
   console.log(`${before.amount.toLocaleString("en-US")} ${before.currency} ${verb}.`);
 }
 
+async function guard(flags, _positional, tail) {
+  if (typeof flags.policy !== "string" || !tail.length) fail(HELP.guard);
+  const policy = readJson(resolve(expandHome(flags.policy)));
+  const authority = localPolicy(policy);
+  // A ceiling is only a ceiling if something counts against it. Without a
+  // ledger every priced call would be refused at run time with a confusing
+  // reason, so say it once, here, where it can be acted on.
+  if (authority.ceilings.length && typeof flags.ledger !== "string") {
+    fail(
+      `The policy ${policy.id} sets ${authority.ceilings.length === 1 ? "a limit" : "limits"}, and nothing is counting against ${authority.ceilings.length === 1 ? "it" : "them"}.\n\n` +
+        `Add --ledger <file>, for example:\n` +
+        `  agent-passport guard --policy ${flags.policy} --ledger ~/.agent-passport/spend.jsonl -- <command>\n\n` +
+        `The file is created on first use and keeps the running total across runs.`,
+    );
+  }
+  const { runGuard } = await import("./guard.mjs");
+  const [command, ...commandArgs] = tail;
+  process.exitCode = await runGuard({
+    policy,
+    authority,
+    command,
+    commandArgs,
+    ledger: typeof flags.ledger === "string" ? fileSpendLedger(resolve(expandHome(flags.ledger))) : undefined,
+    receipts: typeof flags.receipts === "string" ? fileReceiptSink(resolve(expandHome(flags.receipts))) : undefined,
+    engagementId: flags.engagement,
+  });
+}
+
+async function logCommand(flags) {
+  if (typeof flags.receipts !== "string") fail(HELP.log);
+  const receipts = readReceipts(resolve(expandHome(flags.receipts)));
+  if (flags.json) {
+    process.stdout.write(json(receipts));
+    return;
+  }
+  if (!receipts.length) {
+    console.log(`No receipts yet in ${flags.receipts}.`);
+    return;
+  }
+  const pad = (v, n) => String(v ?? "").padEnd(n);
+  console.log(`${pad("when", 21)}${pad("outcome", 10)}${pad("tool", 26)}${pad("amount", 14)}why`);
+  console.log("-".repeat(96));
+  for (const r of receipts) {
+    const amount = r.request.amount ? `${r.request.amount.amount.toLocaleString("en-US")} ${r.request.amount.currency}` : "";
+    // reasons is the policy's answer ("amount.above-ceiling"); blockedBecause is
+    // the gate's ("execution.denied"), which only adds anything when it caught
+    // something the decision did not, such as a replay.
+    const gate = (r.blockedBecause ?? []).filter((c) => !["execution.denied", "execution.needs-human"].includes(c));
+    const why = [...r.reasons, ...gate].join(", ");
+    const paint = r.outcome === "executed" ? green : r.outcome === "blocked" ? red : yellow;
+    console.log(`${pad(r.at.replace("T", " ").slice(0, 19), 21)}${paint(pad(r.outcome, 10))}${pad(r.request.tool ?? r.request.scope, 26)}${pad(amount, 14)}${dim(why)}`);
+  }
+  const spent = receipts
+    .filter((r) => r.outcome !== "blocked" && r.request.amount)
+    .reduce((sum, r) => sum + r.request.amount.amount, 0);
+  const counts = receipts.reduce((acc, r) => ({ ...acc, [r.outcome]: (acc[r.outcome] ?? 0) + 1 }), {});
+  console.log(
+    `\n${receipts.length} decisions: ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ")}` +
+      (spent ? `. ${spent.toLocaleString("en-US")} committed.` : "."),
+  );
+}
+
 async function mcp(flags) {
   const { runMcpServer } = await import("./mcp.mjs");
   await runMcpServer({
@@ -579,11 +687,14 @@ async function mcp(flags) {
   });
 }
 
-const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, settle, mcp };
+const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, settle, guard, log: logCommand, mcp };
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
-  const { flags, positional } = parseArgs(rest);
+  // Everything after a bare `--` belongs to the program being guarded, not to us.
+  const split = rest.indexOf("--");
+  const tail = split === -1 ? [] : rest.slice(split + 1);
+  const { flags, positional } = parseArgs(split === -1 ? rest : rest.slice(0, split));
   if (!command || ["help", "--help", "-h"].includes(command)) {
     console.log(HELP[positional[0]] ?? USAGE);
     return;
@@ -598,7 +709,7 @@ async function main() {
     console.log(HELP[command]);
     return;
   }
-  await run(flags, positional);
+  await run(flags, positional, tail);
 }
 
 main().catch((err) => fail(err instanceof Error ? err.message : String(err)));

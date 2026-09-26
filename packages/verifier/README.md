@@ -26,6 +26,8 @@ npm install @cubitrek/agent-passport-verifier
 | `agent-passport verify <domain or file>` | Verifies and explains a passport in plain English |
 | `agent-passport authorize [<domain or file>] --scope <s> [--policy <file>] [--ledger <file>] [--amount <n>] [--tool <t> --target <id> --args <json>]` | Allow, escalate or deny, bound to the exact action; exits 0, 2 or 1. Authority comes from the passport, your own policy file, or both |
 | `agent-passport settle <nonce> --ledger <file> --commit \| --release` | Closes out the amount a decision is holding |
+| `agent-passport guard --policy <file> --ledger <file> -- <command>` | Runs an MCP server behind your policy. A refused call is never forwarded |
+| `agent-passport log --receipts <file>` | What the guard decided, and what it cost |
 | `agent-passport keygen --kid <id> --out <pem>` | Generates a signing key and prints its TXT record |
 | `agent-passport request-key --key <pem> --kid <id>` | Prints the `agent.requestKeys` entry so callers can be bound to the passport |
 | `agent-passport sign <file> --key <pem>` | Signs a passport file |
@@ -218,6 +220,8 @@ Speaks MCP protocol versions 2024-11-05 through 2025-11-25 over stdio, with no d
 | `checkExecution(decision, finalRequest, options?)` | The binding check alone: `{ ok: true }` or `{ ok: false, errors }` |
 | `memorySpendLedger()` | A `SpendLedger` for one process; a fleet needs a shared store with an atomic reserve |
 | `fileSpendLedger(path)` | An append-only `SpendLedger` on disk. From `@cubitrek/agent-passport-verifier/node`, because it needs `node:fs` |
+| `fileReceiptSink(path)`, `readReceipts(path)` | The receipt trail on disk, also from the `/node` subpath |
+| `toolRequest(call, rules)`, `ruleFor`, `describeRule` | Turning a tool call into a request the decision engine can answer |
 | `buildReceipt`, `signReceipt`, `verifyReceipt` | Receipts, and their Ed25519 signatures |
 | `memoryReceiptSink()`, `memoryNonceStore()` | Single-process stores for tests and small deployments |
 | `diagnoseAgentPassport(options)` | `{ ok, domain, url, checks, passport?, verification? }` |

@@ -45,8 +45,8 @@
     },
     "./package.json": "./package.json",
     "./node": {
-      "types": "./dist/ledger-node.d.ts",
-      "import": "./dist/ledger-node.js"
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
     }
   },
   "files": [
