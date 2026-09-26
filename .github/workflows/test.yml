@@ -34,6 +34,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: node examples/execution-boundary/harness.mjs
 
+      - name: End-to-end scenario (two companies, whole chain)
+        working-directory: ${{ github.workspace }}
+        run: node examples/end-to-end/scenario.mjs
+
   schema-sync:
     runs-on: ubuntu-latest
     steps:
