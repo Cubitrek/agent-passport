@@ -252,6 +252,44 @@ To lint a file against the schema without the CLI:
 npx ajv validate -s schemas/agent-passport.schema.json -d examples/acme.agent-passport.json
 ```
 
+## Questions people ask
+
+### What is an Agent Passport?
+
+A signed JSON file a business publishes at `/.well-known/agent-passport.json` that says who an AI agent acts for, what it may do, how much it may commit, when a human takes over, and where the audit trail lives. The signing key is published in the business's own DNS, so anyone can verify it without a central registry.
+
+### How is this different from OAuth?
+
+OAuth authenticates a caller against one provider that issued the token. A passport is published by the business that owns the agent and read by anyone, with no prior relationship and nobody to register with. The two compose: authenticate the caller however you already do, then read the passport for what that caller's employer has publicly committed to.
+
+### How is this different from an A2A Agent Card?
+
+An Agent Card answers "what can this agent do". A passport answers "what is this agent authorised to commit to on behalf of which business, and who takes over when it should not decide alone". Agent Passport is additive to A2A and MCP, not a replacement for either.
+
+### What stops someone forging a passport?
+
+The signing key has to live inside the issuer's own DNS zone. A passport that names `acme.example` as issuer but points at a key in a zone the forger controls is refused before that zone is ever queried. Controlling the domain is the root of trust, which is the same thing a TLS certificate proves.
+
+### Does a verified passport prove who is calling me?
+
+No, and the spec says so plainly. A passport is a public file, so anyone can quote one. It proves what the issuer authorised, not who is on the other end. Bind the caller separately: mutual TLS, an OAuth client registered to the issuer, or the request-signing keys the issuer can publish inside the passport itself.
+
+### Do I need Cubitrek to verify a passport?
+
+No. Verification is a DNS lookup and an Ed25519 signature check. There is no registry, no API key and no service to call. The reference verifier is MIT licensed and the spec is complete enough to reimplement.
+
+### What happens when an agent asks for more than it is allowed?
+
+The decision is allow, escalate or deny, and every answer carries a reason code. Above the issuer's human-in-the-loop threshold it escalates to the named person with a published response window. Above the ceiling it is denied outright, because no autonomous commitment at that size was ever authorised.
+
+### Can it stop an agent quietly exceeding a spend cap?
+
+Yes, when you give it a ledger. A published ceiling that nobody counts is a statement of intent: forty commitments of 2,000 each pass every individual check against a 50,000 ceiling. The ledger reserves the amount when the decision is made and commits it once the effect has happened, so two decisions taken before either executes cannot both spend the same headroom.
+
+### Is it ready to use?
+
+The spec is draft v0.1 and the version field reads `0.1.0`. Cubitrek publishes a passport in production at [cubitrek.com/.well-known/agent-passport.json](https://cubitrek.com/.well-known/agent-passport.json). The reference implementation is covered by the test suite in this repository, an execution-boundary harness and an end-to-end scenario, all of which run in CI. Breaking changes will bump the major version and ship under a new spec path.
+
 ## Adopters
 
 Add yourself by sending a PR to [`adopters.md`](./adopters.md). Once your passport validates, your domain is listed in [the Cubitrek registry](https://cubitrek.com/agent-passport/adopters).
