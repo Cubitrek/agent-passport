@@ -6,3 +6,6 @@ dist/
 .idea/
 coverage/
 *.log
+
+# npm pack output
+*.tgz

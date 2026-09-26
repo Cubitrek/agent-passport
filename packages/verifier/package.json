@@ -43,7 +43,11 @@
       "types": "./dist/canonical.d.ts",
       "import": "./dist/canonical.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./node": {
+      "types": "./dist/ledger-node.d.ts",
+      "import": "./dist/ledger-node.js"
+    }
   },
   "files": [
     "dist",

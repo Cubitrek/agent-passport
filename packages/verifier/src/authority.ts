@@ -31,6 +31,9 @@ export type DataClassification = NonNullable<PassportCompliance["dataClassificat
  */
 export type SpendWindow = "engagement" | "day" | "month" | "total";
 
+/** Every window a ceiling may use. A typo here would silently widen a cap. */
+export const SPEND_WINDOWS: readonly SpendWindow[] = ["engagement", "day", "month", "total"];
+
 export interface AuthorityCeiling {
   amount: number;
   currency: string;
@@ -189,6 +192,11 @@ export function localPolicy(policy: LocalPolicy): Authority {
         throw new TypeError(`limit in policy ${policy.id} needs a non-negative amount`);
       }
       if (!l.currency) throw new TypeError(`limit in policy ${policy.id} needs a currency`);
+      if (l.window !== undefined && !SPEND_WINDOWS.includes(l.window)) {
+        throw new TypeError(
+          `limit in policy ${policy.id} has window "${String(l.window)}"; use one of ${SPEND_WINDOWS.join(", ")}`,
+        );
+      }
       return {
         amount: l.amount,
         currency: l.currency.toUpperCase(),

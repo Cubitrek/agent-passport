@@ -102,6 +102,10 @@ The in-process ledger and nonce store are for one process. A fleet needs a
 shared store whose reserve step is a single atomic operation, such as a Redis
 transaction or a database row lock. The interfaces are small on purpose.
 
+The on-disk ledger lives behind the `@cubitrek/agent-passport-verifier/node`
+subpath rather than the main entry, because it needs `node:fs` and the rest of
+the package deliberately runs unchanged in Workers and browsers.
+
 ## Worked through
 
 `examples/execution-boundary/harness.mjs` runs the same cases against all

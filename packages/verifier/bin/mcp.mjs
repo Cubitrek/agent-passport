@@ -172,6 +172,11 @@ const HANDLERS = {
     const authority =
       published && config.policy ? intersect(published, config.policy) : (published ?? config.policy);
     const tool = optionalString(args, "tool");
+    // target and arguments describe an action, and without a tool name they
+    // would not be bound into the decision at all.
+    if (!tool && (args.target !== undefined || args.arguments !== undefined)) {
+      throw new Error("target and arguments describe an action, so tool is required as well");
+    }
     const decision = await decide(authority, {
       action: tool ? { tool, target: optionalString(args, "target"), args: args.arguments } : undefined,
       scope: requireString(args, "scope"),

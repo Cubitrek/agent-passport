@@ -45,7 +45,9 @@ export type {
   LocalPolicy,
   SpendWindow,
 } from "./authority.js";
-export { fileSpendLedger, memorySpendLedger } from "./ledger.js";
+export { memorySpendLedger } from "./ledger.js";
+// fileSpendLedger imports node:fs, so it lives behind the "/node" subpath
+// and is deliberately not re-exported here.
 export type {
   LedgerEntry,
   LedgerQuery,

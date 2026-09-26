@@ -7,14 +7,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   checkAndHold,
+  checkExecution,
   decide,
-  fileSpendLedger,
   guardedCall,
   intersect,
   localPolicy,
@@ -25,6 +25,7 @@ import {
   signReceipt,
   verifyReceipt,
 } from "../dist/index.js";
+import { fileSpendLedger } from "../dist/ledger-node.js";
 
 const NOW = new Date("2026-06-10T09:00:00Z");
 const now = () => NOW;
@@ -549,7 +550,6 @@ test("the ledger itself refuses a reservation that would break a ceiling", async
 /* The same three sources of authority, reached from a shell. */
 
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { draftAgentPassport, dnsTxtRecord, signAgentPassport } from "../dist/index.js";
@@ -786,4 +786,193 @@ test("without a policy the MCP server still requires a counterparty domain", asy
   assert.deepEqual(listed.inputSchema.required, ["domain", "scope"]);
   assert.equal(replies.get(10).result.isError, true);
   assert.match(replies.get(10).result.content[0].text, /domain is required/);
+});
+
+/**
+ * The package advertises that it runs in Cloudflare Workers and browsers, and
+ * dns.ts goes out of its way to use DNS-over-HTTPS rather than node:dns to
+ * keep that true. Anything reachable from the main entry has to hold the same
+ * line, so the on-disk ledger sits behind the "/node" subpath instead.
+ */
+test("nothing reachable from the main entry imports a Node built-in", async () => {
+  const dist = resolve(dirname(fileURLToPath(import.meta.url)), "../dist");
+  const seen = new Set();
+  const leaks = [];
+  const walk = (file) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const source = readFileSync(resolve(dist, file), "utf8");
+    for (const m of source.matchAll(/from "(\.\/[^"]+)"/g)) walk(m[1].slice(2));
+    for (const m of source.matchAll(/from "(node:[^"]+)"/g)) leaks.push(`${file} imports ${m[1]}`);
+  };
+  walk("index.js");
+
+  assert.deepEqual(leaks, []);
+  assert.ok(seen.size > 5, `only walked ${seen.size} files, so the check proved nothing`);
+  assert.ok(seen.has("authorize.js") && seen.has("ledger.js"), "the walk did not reach the new modules");
+  assert.ok(!seen.has("ledger-node.js"), "the on-disk ledger must not be reachable from the main entry");
+
+  // And the subpath that is allowed to use them really does.
+  const nodeOnly = readFileSync(resolve(dist, "ledger-node.js"), "utf8");
+  assert.match(nodeOnly, /from "node:fs"/);
+});
+
+/* Inputs a caller can actually send, including the ones they should not. */
+
+test("a negative amount is refused, and an unrepresentable one is a programming error", async () => {
+  const ledger = memorySpendLedger();
+  for (const opts of [{ now }, { now, ledger }]) {
+    const result = await decide(policy(), transfer(-100), opts);
+    assert.equal(result.decision, "deny");
+    assert.deepEqual(codes(result.reasons), ["amount.invalid"]);
+    assert.equal(result.charge?.reserved, false);
+  }
+  // Letting one through would subtract from the running total, so check that
+  // nothing was recorded against the ceiling either way.
+  assert.equal(
+    await ledger.outstanding({ subject: "ops-bot", currency: "USD", window: "day", at: NOW }),
+    0,
+  );
+
+  for (const bad of [Number.NaN, Infinity, -Infinity]) {
+    await assert.rejects(decide(policy(), transfer(bad), { now }), {
+      name: "TypeError",
+      message: /amount\.amount must be a finite number/,
+    });
+  }
+  assert.equal((await decide(policy(), transfer(0), { now, ledger })).decision, "allow");
+});
+
+test("a policy cannot set a ceiling over a window that does not exist", () => {
+  const withWindow = (window) =>
+    localPolicy({ id: "w", scope: ["x"], limits: [{ amount: 1, currency: "USD", window }] });
+  for (const window of ["engagement", "day", "month", "total"]) {
+    assert.equal(withWindow(window).ceilings[0].window, window);
+  }
+  // "fortnight" used to be accepted and then quietly enforced as a total.
+  for (const window of ["fortnight", "DAY", "week", "", null]) {
+    assert.throws(() => withWindow(window), { name: "TypeError", message: /use one of/ }, String(window));
+  }
+  // An omitted window still means "total".
+  assert.equal(localPolicy({ id: "w", scope: ["x"], limits: [{ amount: 1, currency: "USD" }] }).ceilings[0].window, "total");
+});
+
+test("a file ledger survives an interrupted append but refuses a corrupted one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ap-ledger-"));
+  const at = new Date("2026-09-26T10:00:00Z");
+  const entry = (nonce, amount) =>
+    JSON.stringify({ nonce, subject: "s", amount, currency: "USD", at: "2026-09-26T00:00:00Z", expiresAt: "2126-01-01T00:00:00Z", state: "committed" });
+  const query = { subject: "s", currency: "USD", window: "day", at };
+  try {
+    // A crash mid-append leaves a partial last line. That record never landed,
+    // so the rest of the ledger still has to be readable.
+    const cut = join(dir, "cut.jsonl");
+    writeFileSync(cut, `${entry("n1", 50)}\n{"nonce":"n2","sub`);
+    assert.equal(await fileSpendLedger(cut).committed(query), 50);
+    // And it keeps working: a new entry appends cleanly after the partial one.
+    const after = fileSpendLedger(cut);
+    assert.deepEqual(
+      await after.reserve({ subject: "s", amount: 10, currency: "USD", ceilings: [], nonce: "n3", expiresAt: "2126-01-01T00:00:00Z", at }),
+      { ok: true },
+    );
+    await after.commit("n3");
+    assert.equal(await after.committed(query), 60);
+
+    // Corruption anywhere else is not something to guess past: skipping the
+    // line would drop committed spend and hand back headroom.
+    const rotten = join(dir, "rotten.jsonl");
+    writeFileSync(rotten, `${entry("n1", 50)}\nnot json at all\n${entry("n2", 10)}\n`);
+    await assert.rejects(fileSpendLedger(rotten).committed(query), {
+      message: /line 2 is not JSON/,
+    });
+
+    const nameless = join(dir, "nameless.jsonl");
+    writeFileSync(nameless, `${entry("n1", 50)}\n{"amount":10}\n`);
+    await assert.rejects(fileSpendLedger(nameless).committed(query), { message: /line 2 has no nonce/ });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("decisions taken in parallel cannot both spend the same headroom", async () => {
+  const ledger = memorySpendLedger();
+  const ask = () => decide(policy({ humanInLoop: undefined }), transfer(600), { now, ledger });
+  const [a, b] = await Promise.all([ask(), ask()]);
+  assert.deepEqual([a.decision, b.decision].sort(), ["allow", "deny"]);
+
+  const more = await Promise.all(Array.from({ length: 5 }, ask));
+  assert.deepEqual(new Set(more.map((d) => d.decision)), new Set(["deny"]));
+  assert.equal(
+    await ledger.outstanding({ subject: "ops-bot", currency: "USD", window: "day", at: NOW }),
+    600,
+    "the running total must never exceed what was actually allowed",
+  );
+});
+
+test("a decision survives the trip through JSON that the CLI and MCP put it through", async () => {
+  const request = transfer(100);
+  const decision = await decide(policy(), request, { now, ledger: memorySpendLedger() });
+  const overTheWire = JSON.parse(JSON.stringify(decision));
+
+  assert.deepEqual(await checkExecution(overTheWire, request, { now }), { ok: true });
+  // Key order is not part of the request; values are.
+  const reordered = { ...request, action: { args: request.action.args, target: request.action.target, tool: request.action.tool } };
+  assert.deepEqual(await checkExecution(overTheWire, reordered, { now }), { ok: true });
+  assert.deepEqual(
+    codes((await checkExecution(overTheWire, { ...request, amount: { amount: 101, currency: "USD" } }, { now })).errors),
+    ["execution.request-changed"],
+  );
+});
+
+test("a target or arguments without a tool name is refused, not quietly dropped", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ap-cli-"));
+  try {
+    const policyPath = tempPolicy(dir, {
+      id: "p",
+      agentId: "s",
+      scope: ["x"],
+      limits: [{ amount: 100, currency: "USD", window: "day" }],
+    });
+    const base = ["authorize", "--policy", policyPath, "--scope", "x", "--amount", "10", "--prior-spend", "0"];
+
+    for (const extra of [["--args", '{"q":1}'], ["--target", "acct-1"], ["--target", "a", "--args", "{}"]]) {
+      const out = run(...base, ...extra);
+      assert.equal(out.status, 1, extra.join(" "));
+      assert.match(out.stderr, /they need --tool as well/);
+    }
+    assert.equal(runJson(...base, "--tool", "t", "--args", '{"q":1}').decision, "allow");
+
+    // With --tool the arguments really are bound, which is the point.
+    const a = runJson(...base, "--tool", "t", "--args", '{"q":1}').binding.digest;
+    const b = runJson(...base, "--tool", "t", "--args", '{"q":2}').binding.digest;
+    assert.notEqual(a, b);
+
+    // The MCP tool refuses the same shape.
+    const replies = mcpCalls(["--policy", policyPath], [
+      { scope: "x", amount: 10, prior_spend: 0, target: "acct-1" },
+      { scope: "x", amount: 10, prior_spend: 0, tool: "t", target: "acct-1" },
+    ]);
+    assert.equal(replies.get(10).result.isError, true);
+    assert.match(replies.get(10).result.content[0].text, /tool is required as well/);
+    assert.equal(replies.get(11).result.isError, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a path that is not there is a path error, not a complaint about hostnames", () => {
+  for (const args of [
+    ["verify", "./typo.json"],
+    ["authorize", "./typo.json", "--scope", "a.b"],
+    ["doctor", "./typo.json"],
+    ["doctor", "some/dir"],
+    ["verify", "/absolute/missing.json"],
+  ]) {
+    const out = run(...args);
+    assert.equal(out.status, 1, args.join(" "));
+    assert.match(out.stderr, /No such file:/, args.join(" "));
+    assert.doesNotMatch(out.stderr, /bare hostname/, args.join(" "));
+  }
+  // A bare hostname is still read as a domain, and a real file as a file.
+  assert.match(run("verify", "not a domain at all").stdout + run("verify", "not a domain at all").stderr, /hostname|Not verified/);
 });

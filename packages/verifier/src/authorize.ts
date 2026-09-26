@@ -515,6 +515,23 @@ async function checkAmount(
   if (!request.amount) return;
   const { currency } = request.amount;
   const amount = request.amount.amount;
+  // A value that cannot be written as JSON is a programming error, and is
+  // thrown the same way an unrepresentable argument is. A negative value is
+  // perfectly representable and perfectly meaningful, so it is refused:
+  // letting one through would subtract from the running total and hand back
+  // headroom that was never released.
+  if (typeof amount !== "number" || !Number.isFinite(amount)) {
+    throw new TypeError(
+      `amount.amount must be a finite number, not ${typeof amount === "number" ? String(amount) : typeof amount}`,
+    );
+  }
+  if (amount < 0) {
+    denials.push({
+      code: "amount.invalid",
+      message: `An amount cannot be negative, and this one is ${amount}.`,
+    });
+    return;
+  }
   const upper = currency.toUpperCase();
   const now = (opts.now ?? (() => new Date()))();
   let mismatched = false;

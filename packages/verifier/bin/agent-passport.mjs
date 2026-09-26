@@ -21,7 +21,6 @@ import {
   dnsTxtRecord,
   draftAgentPassport,
   fetchSigningKeys,
-  fileSpendLedger,
   guessEndpointType,
   intersect,
   isoSeconds,
@@ -32,6 +31,7 @@ import {
   validate,
   verifyAgentPassport,
 } from "../dist/index.js";
+import { fileSpendLedger } from "../dist/ledger-node.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(here, "../package.json"), "utf8")).version;
@@ -235,9 +235,22 @@ function samePublicKey(pk, raw) {
   return Buffer.compare(bytes.subarray(bytes.length - 32), Buffer.from(raw)) === 0;
 }
 
+/**
+ * A target that is plainly a path, and is not there, gets a path error.
+ * Falling through to the domain branch answers a typo with a complaint about
+ * hostnames, which sends people looking in the wrong place.
+ */
+function refusePathTypos(target) {
+  const looksLikePath = target.endsWith(".json") || target.includes("/") || target.includes(sep);
+  if (looksLikePath && !existsSync(target)) {
+    fail(`No such file: ${target}\n\nPass a domain to fetch a published passport, or a path to a local one.`);
+  }
+}
+
 function targetOptions(target, flags) {
   const opts = { checkRevocation: !flags["no-revocation"] };
   if (typeof flags["public-key"] === "string") opts.resolveSignerPublicKey = { publicKeyB64: flags["public-key"] };
+  refusePathTypos(target);
   if (target.endsWith(".json") && existsSync(target)) opts.passport = readJson(target);
   else opts.domain = target;
   return opts;
@@ -431,6 +444,8 @@ async function renew(flags, [file]) {
 
 async function doctor(flags, [domain]) {
   if (!domain) fail(HELP.doctor);
+  // doctor only checks published passports, so a path is always a mistake.
+  refusePathTypos(domain);
   const result = await diagnoseAgentPassport({
     domain,
     warnDays: flags["warn-days"] !== undefined ? number(flags["warn-days"], "warn-days") : undefined,
@@ -492,6 +507,12 @@ async function authorizeCommand(flags, [target]) {
   const mine = hasPolicy ? policyFromFile(flags.policy) : undefined;
   const authority = published && mine ? intersect(published, mine) : (published ?? mine);
 
+  // --target and --args only mean anything alongside --tool, and a decision
+  // that silently ignored them would not be bound to the action the caller
+  // thinks they described.
+  if (typeof flags.tool !== "string" && (flags.target !== undefined || flags.args !== undefined)) {
+    fail("--target and --args describe an action, so they need --tool as well.");
+  }
   const action =
     typeof flags.tool === "string"
       ? { tool: flags.tool, target: flags.target, args: flags.args !== undefined ? jsonFlag(flags.args, "args") : undefined }
