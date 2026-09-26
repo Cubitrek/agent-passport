@@ -959,3 +959,20 @@ test("a target or arguments without a tool name is refused, not quietly dropped"
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a path that is not there is a path error, not a complaint about hostnames", () => {
+  for (const args of [
+    ["verify", "./typo.json"],
+    ["authorize", "./typo.json", "--scope", "a.b"],
+    ["doctor", "./typo.json"],
+    ["doctor", "some/dir"],
+    ["verify", "/absolute/missing.json"],
+  ]) {
+    const out = run(...args);
+    assert.equal(out.status, 1, args.join(" "));
+    assert.match(out.stderr, /No such file:/, args.join(" "));
+    assert.doesNotMatch(out.stderr, /bare hostname/, args.join(" "));
+  }
+  // A bare hostname is still read as a domain, and a real file as a file.
+  assert.match(run("verify", "not a domain at all").stdout + run("verify", "not a domain at all").stderr, /hostname|Not verified/);
+});
