@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"]
+  },
+  "files": ["surface.ts", "no-node-builtins.ts"]
+}
