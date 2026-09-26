@@ -8,7 +8,7 @@ Library, CLI and MCP server for the [Agent Passport spec, v0.1](https://github.c
 - **Health-check** a published passport, with a fix for every problem.
 - **Connect AI assistants** through a four-tool MCP server.
 
-The library is pure ESM and runs in Node 20+, Cloudflare Workers and modern browsers. The CLI and MCP server need Node.
+The library is pure ESM and runs in Node 20+, Cloudflare Workers and modern browsers. The CLI and MCP server need Node, as does the `@cubitrek/agent-passport-verifier/node` subpath, which is where anything touching the file system lives so the main entry stays portable.
 
 ```bash
 npm install @cubitrek/agent-passport-verifier
@@ -54,7 +54,7 @@ const nonceStore = memoryNonceStore(); // one per process; share one across mach
 const result = await guardedCall(decision, finalRequest, () => provider.order(finalRequest), {
   nonceStore,
 });
-if (result.outcome !== "executed") console.warn(result.reasons ?? result.error);
+if (result.outcome === "blocked") console.warn(result.reasons, result.receipt);
 ```
 
 `checkExecution()` is the same check on its own, for code that cannot express the effect as one function; `checkAndHold()` adds the ledger and the receipt in two steps.
@@ -96,7 +96,8 @@ await decide(intersect(passportAuthority(verification), mine), request, { ledger
 A ceiling nothing counts is a statement of intent. A `SpendLedger` records what a subject has committed, over one engagement, a UTC day, a UTC month or all time.
 
 ```typescript
-import { fileSpendLedger, memorySpendLedger } from "@cubitrek/agent-passport-verifier";
+import { memorySpendLedger } from "@cubitrek/agent-passport-verifier";
+import { fileSpendLedger } from "@cubitrek/agent-passport-verifier/node";
 
 const ledger = fileSpendLedger(".agent-passport/spend.jsonl");
 const decision = await decide(mine, request, { ledger, engagementId: "inv-2291" });
@@ -215,7 +216,8 @@ Speaks MCP protocol versions 2024-11-05 through 2025-11-25 over stdio, with no d
 | `guardedCall(decision, finalRequest, effect, options?)` | Promise of `{ outcome: "executed", value, receipt }`, `{ outcome: "blocked", reasons, receipt }` or `{ outcome: "unknown", error, receipt }` |
 | `checkAndHold(decision, finalRequest, options?)` | The same gate in two steps: `{ ok: true, hold }` or `{ ok: false, reasons, receipt }` |
 | `checkExecution(decision, finalRequest, options?)` | The binding check alone: `{ ok: true }` or `{ ok: false, errors }` |
-| `memorySpendLedger()`, `fileSpendLedger(path)` | A `SpendLedger` for one process; a fleet needs a shared store with an atomic reserve |
+| `memorySpendLedger()` | A `SpendLedger` for one process; a fleet needs a shared store with an atomic reserve |
+| `fileSpendLedger(path)` | An append-only `SpendLedger` on disk. From `@cubitrek/agent-passport-verifier/node`, because it needs `node:fs` |
 | `buildReceipt`, `signReceipt`, `verifyReceipt` | Receipts, and their Ed25519 signatures |
 | `memoryReceiptSink()`, `memoryNonceStore()` | Single-process stores for tests and small deployments |
 | `diagnoseAgentPassport(options)` | `{ ok, domain, url, checks, passport?, verification? }` |

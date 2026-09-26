@@ -21,7 +21,7 @@ export interface SignableRequest {
   method: string;
   /** Absolute URL, for example https://agents.globex.example/orders?x=1 */
   url: string;
-  headers?: Headers | Record<string, string | string[]>;
+  headers?: Headers | Record<string, string | string[] | undefined>;
   body?: Uint8Array | string | null;
 }
 
@@ -48,12 +48,19 @@ export interface SignHttpRequestOptions {
   nonce?: string;
 }
 
-/** Headers to add to the outgoing request. */
-export interface SignedRequestHeaders {
+/**
+ * Headers to add to the outgoing request.
+ *
+ * A type alias rather than an interface on purpose: TypeScript gives an alias
+ * an implicit index signature, so the headers this returns can be handed
+ * straight back to a SignableRequest. With an interface, signing a request and
+ * then verifying it did not typecheck.
+ */
+export type SignedRequestHeaders = {
   "content-digest"?: string;
   "signature-input": string;
   signature: string;
-}
+};
 
 export interface VerifyHttpRequestOptions {
   /** Return the public key for this key id (raw 32-byte or SPKI, base64 or base64url), or null. */

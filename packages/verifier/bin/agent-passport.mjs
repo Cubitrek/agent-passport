@@ -21,7 +21,6 @@ import {
   dnsTxtRecord,
   draftAgentPassport,
   fetchSigningKeys,
-  fileSpendLedger,
   guessEndpointType,
   intersect,
   isoSeconds,
@@ -32,6 +31,7 @@ import {
   validate,
   verifyAgentPassport,
 } from "../dist/index.js";
+import { fileSpendLedger } from "../dist/ledger-node.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(here, "../package.json"), "utf8")).version;
@@ -492,6 +492,12 @@ async function authorizeCommand(flags, [target]) {
   const mine = hasPolicy ? policyFromFile(flags.policy) : undefined;
   const authority = published && mine ? intersect(published, mine) : (published ?? mine);
 
+  // --target and --args only mean anything alongside --tool, and a decision
+  // that silently ignored them would not be bound to the action the caller
+  // thinks they described.
+  if (typeof flags.tool !== "string" && (flags.target !== undefined || flags.args !== undefined)) {
+    fail("--target and --args describe an action, so they need --tool as well.");
+  }
   const action =
     typeof flags.tool === "string"
       ? { tool: flags.tool, target: flags.target, args: flags.args !== undefined ? jsonFlag(flags.args, "args") : undefined }
