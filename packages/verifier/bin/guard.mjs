@@ -71,6 +71,17 @@ export async function runGuard({
 
     if (!mapping.ok) {
       const [first] = mapping.errors;
+      if (mapping.effect) {
+        // The proxy has nobody to ask, so a rule wanting a person is a refusal
+        // here, with the reason, rather than a prompt.
+        log(`${name}: ${first.code}`);
+        return refuse(message.id, [
+          `Refused by the local policy: ${name}`,
+          first.message,
+          first.hint,
+          mapping.effect === "ask" ? "A person has to approve this one." : undefined,
+        ]);
+      }
       if (first.code === "tool.unmatched") {
         if (unmatched === "allow") return toUpstream(message);
         log(`${name}: no rule covers this tool, and unmatched is "${unmatched}"`);

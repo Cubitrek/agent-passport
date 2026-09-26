@@ -197,16 +197,36 @@ export function localPolicy(policy: LocalPolicy): Authority {
     if (!rule || typeof rule.match !== "string" || !rule.match) {
       throw new TypeError(`every tool rule in policy ${policy.id} needs a match pattern`);
     }
-    if (typeof rule.scope !== "string" || !rule.scope) {
-      throw new TypeError(`the tool rule "${rule.match}" in policy ${policy.id} needs a scope`);
+    if (rule.effect !== undefined && rule.effect !== "deny" && rule.effect !== "ask") {
+      throw new TypeError(`effect on "${rule.match}" in policy ${policy.id} must be deny or ask`);
     }
-    if (!policy.scope.includes(rule.scope)) {
-      throw new TypeError(
-        `the tool rule "${rule.match}" in policy ${policy.id} uses scope "${rule.scope}", which the policy does not grant`,
-      );
+    // A rule that says outright what to do needs no scope. Any other rule
+    // does, and it has to be one the policy actually grants: a scope that is
+    // merely absent denies by accident, which reads the same as a typo.
+    if (!rule.effect) {
+      if (typeof rule.scope !== "string" || !rule.scope) {
+        throw new TypeError(`the tool rule "${rule.match}" in policy ${policy.id} needs a scope, or an effect`);
+      }
+      if (!policy.scope.includes(rule.scope)) {
+        throw new TypeError(
+          `the tool rule "${rule.match}" in policy ${policy.id} uses scope "${rule.scope}", which the policy does not grant`,
+        );
+      }
     }
     if (rule.amountUnit !== undefined && rule.amountUnit !== "major" && rule.amountUnit !== "minor") {
       throw new TypeError(`amountUnit on "${rule.match}" in policy ${policy.id} must be major or minor`);
+    }
+    if (rule.when !== undefined) {
+      if (typeof rule.when.path !== "string" || typeof rule.when.matches !== "string") {
+        throw new TypeError(`when on "${rule.match}" in policy ${policy.id} needs a path and a matches pattern`);
+      }
+      try {
+        new RegExp(rule.when.matches);
+      } catch (err) {
+        throw new TypeError(
+          `when.matches on "${rule.match}" in policy ${policy.id} is not a valid regular expression: ${(err as Error).message}`,
+        );
+      }
     }
   }
   if (policy.unmatched !== undefined && !["allow", "escalate", "deny"].includes(policy.unmatched)) {

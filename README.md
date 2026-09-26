@@ -165,6 +165,48 @@ A 9,000 USD charge against that policy comes back to the agent as a refusal nami
 
 The guard also annotates the tool list, so the model knows the rules before it tries. A worked policy with every field explained is in [`examples/policies`](./examples/policies).
 
+### Or put it in front of Claude Code itself
+
+A hook sees every tool Claude Code uses, including `Bash`, `Write` and `Edit`, not just MCP tools. In `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": "agent-passport",
+          "args": ["hook", "--policy", "/abs/path/claude-code.json",
+                   "--ledger", "/abs/path/spend.jsonl"]
+        }]
+      }
+    ]
+  }
+}
+```
+
+An escalation becomes a real prompt here, because Claude Code can ask the person at the keyboard. A rule can also refuse a shape outright:
+
+```json
+{ "match": "Bash",
+  "when": { "path": "args.command", "matches": "(^|[;&|]\\s*)rm\\s+-[a-zA-Z]*[rf]" },
+  "effect": "deny", "note": "Destructive shell commands are refused." }
+```
+
+Two deliberate choices. The hook never exits non-zero, because that tells Claude Code to carry on, so every failure including a missing policy comes back as a refusal instead. And an allowed call is answered with nothing, so Claude Code's own prompts still happen: the guard narrows what may happen and never widens it.
+
+Matching shell commands with a pattern catches mistakes, not a determined adversary. The real control is the scope list, and an agent never granted `shell.run` cannot run a shell however the command is spelled.
+
+One thing to check once: a hook whose command cannot be found exits non-zero, and Claude Code carries on, so a typo in the path means no guard at all and nothing says so. Confirm it by hand before trusting it:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}' | agent-passport hook --policy /abs/path/claude-code.json
+```
+
+A `deny` comes back when it is wired up correctly. Nothing coming back means it is not.
+
 ### See what it has been doing
 
 ```bash

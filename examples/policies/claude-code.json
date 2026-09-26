@@ -1,0 +1,55 @@
+{
+  "id": "claude-code-local",
+  "agentId": "claude-code",
+  "label": "limits on the assistant running on this machine",
+  "scope": [
+    "shell.run",
+    "files.read",
+    "files.write"
+  ],
+  "tools": [
+    {
+      "match": "Bash",
+      "when": {
+        "path": "args.command",
+        "matches": "(^|[;&|]\\s*)(sudo\\b|rm\\s+-[a-zA-Z]*[rf]|shutdown\\b|mkfs\\b)"
+      },
+      "note": "Destructive shell commands are not granted, so they are refused.",
+      "effect": "deny"
+    },
+    {
+      "match": "Bash",
+      "when": {
+        "path": "args.command",
+        "matches": "\\bcurl\\b[^|]*\\|\\s*(ba)?sh\\b"
+      },
+      "note": "Piping a download straight into a shell is not granted.",
+      "effect": "deny"
+    },
+    {
+      "match": "Bash",
+      "scope": "shell.run"
+    },
+    {
+      "match": "Read",
+      "scope": "files.read"
+    },
+    {
+      "match": "Grep",
+      "scope": "files.read"
+    },
+    {
+      "match": "Glob",
+      "scope": "files.read"
+    },
+    {
+      "match": "Write",
+      "scope": "files.write"
+    },
+    {
+      "match": "Edit",
+      "scope": "files.write"
+    }
+  ],
+  "unmatched": "escalate"
+}

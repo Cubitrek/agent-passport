@@ -65,7 +65,7 @@ export type {
 } from "./receipt.js";
 export { checkAndHold, guardedCall, memoryReceiptSink } from "./guard.js";
 export { describeRule, ruleFor, toolRequest } from "./tool-policy.js";
-export type { ToolCall, ToolMapping, ToolRule, UnmatchedPolicy } from "./tool-policy.js";
+export type { ToolCall, ToolCondition, ToolMapping, ToolRule, UnmatchedPolicy } from "./tool-policy.js";
 export type { CheckAndHoldResult, GuardOptions, GuardResult, Hold } from "./guard.js";
 export {
   CALLER_REQUIRED_COMPONENTS,

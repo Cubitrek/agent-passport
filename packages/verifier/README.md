@@ -27,6 +27,7 @@ npm install @cubitrek/agent-passport-verifier
 | `agent-passport authorize [<domain or file>] --scope <s> [--policy <file>] [--ledger <file>] [--amount <n>] [--tool <t> --target <id> --args <json>]` | Allow, escalate or deny, bound to the exact action; exits 0, 2 or 1. Authority comes from the passport, your own policy file, or both |
 | `agent-passport settle <nonce> --ledger <file> --commit \| --release` | Closes out the amount a decision is holding |
 | `agent-passport guard --policy <file> --ledger <file> -- <command>` | Runs an MCP server behind your policy. A refused call is never forwarded |
+| `agent-passport hook --policy <file>` | Claude Code PreToolUse hook. Decides every tool call, including Bash, Write and Edit. Never exits non-zero, because that would let the call through |
 | `agent-passport log --receipts <file>` | What the guard decided, and what it cost |
 | `agent-passport keygen --kid <id> --out <pem>` | Generates a signing key and prints its TXT record |
 | `agent-passport request-key --key <pem> --kid <id>` | Prints the `agent.requestKeys` entry so callers can be bound to the passport |
