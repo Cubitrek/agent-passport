@@ -156,6 +156,92 @@ hook afterwards whether it did. That over-counts a tool that fails, and a
 prompt you decline. It is the safe direction, and for priced tools the proxy is
 the better surface because it settles against what actually happened.
 
+## When a call needs a person
+
+An escalation used to be a dead end: the guard refused it and named somebody to
+ask, and nothing more could happen. With `--approvals` it becomes a question
+that can actually be answered.
+
+```bash
+agent-passport guard \
+  --policy treasury.json \
+  --ledger ~/.agent-passport/spend.jsonl \
+  --approvals ~/.agent-passport/approvals.jsonl \
+  -- npx -y @stripe/mcp
+```
+
+The agent gets a refusal with a reference:
+
+```
+Waiting for a person: stripe.create_charge
+2,500 USD is above the 1,000 USD threshold, so a person must confirm before commitment.
+Request 4ad06d81 is recorded. Someone can answer it with:
+  agent-passport approve 4ad06d81 --approvals ~/.agent-passport/approvals.jsonl
+This call was not sent to the server.
+```
+
+You look at what is waiting, and answer it:
+
+```bash
+agent-passport approvals --approvals ~/.agent-passport/approvals.jsonl
+```
+
+```
+4ad06d81  WAITING
+  stripe.create_charge  2,500 USD
+  on cus_7
+  amount.above-human-threshold
+  asked 2026-09-26 18:35:31, window closes 2026-09-27 02:35:31
+  {"amount":250000,"customer":"cus_7"}
+```
+
+```bash
+agent-passport approve 4ad06d81 --approvals ~/.agent-passport/approvals.jsonl --by faizan
+```
+
+Next time the agent makes that call, it goes through.
+
+### What an approval is worth
+
+**One exact call.** What ties an approval to a call is the digest of the call
+itself, taken over the subject, the authority and the request. Change the
+amount by a penny, the customer, or any argument, and the approval no longer
+matches. It cannot be spent on something else.
+
+**Once.** It is marked used when the call actually runs, so a retry needs
+asking again.
+
+**Until the window closes.** The window is the policy's `slaHours`. After that
+the call has to be decided afresh.
+
+Unlike a receipt, a waiting request shows the arguments in full. Nobody can
+approve what they cannot see, and this file is yours rather than something
+handed to a counterparty.
+
+### Who may answer
+
+Here is the part worth being blunt about. An agent that can run a shell can
+also run `agent-passport approve`. On anything unattended, the answer has to be
+something the agent does not hold, so name the keys that may answer:
+
+```json
+"approvers": [
+  { "keyId": "approver-2026", "alg": "ed25519",
+    "publicKey": "2ib2Yj3Xd1dzjWXBiz_Hu98_DAsLYEabhoSYgObSDgs" }
+]
+```
+
+```bash
+agent-passport keygen --kid approver-2026 --out ~/.agent-passport/keys/approver.pem
+agent-passport approve 4ad06d81 --approvals ~/.agent-passport/approvals.jsonl \
+  --key ~/.agent-passport/keys/approver.pem --kid approver-2026 --by faizan
+```
+
+With `approvers` set, an unsigned answer is refused, an answer signed by a key
+the policy does not name is refused, and an answer edited after signing is
+refused. Without it, anything in the file counts, which is only safe where the
+agent cannot write to that file.
+
 ## What the agent sees
 
 The guard annotates the tool list, so the model knows the rules before it tries:
