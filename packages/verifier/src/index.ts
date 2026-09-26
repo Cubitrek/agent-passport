@@ -64,7 +64,7 @@ export type {
   ReceiptVerification,
 } from "./receipt.js";
 export { checkAndHold, guardedCall, memoryReceiptSink } from "./guard.js";
-export { describeRule, ruleFor, toolRequest } from "./tool-policy.js";
+export { describeRule, ruleFor, runawayRegex, toolRequest } from "./tool-policy.js";
 export type { ToolCall, ToolCondition, ToolMapping, ToolRule, UnmatchedPolicy } from "./tool-policy.js";
 export type { CheckAndHoldResult, GuardOptions, GuardResult, Hold } from "./guard.js";
 export {
@@ -99,6 +99,8 @@ export { daysUntilExpiry, describePassport } from "./describe.js";
 export { defaultKeyId, draftAgentPassport, guessEndpointType, isoSeconds } from "./draft.js";
 export type { EndpointType, PassportDraftInput } from "./draft.js";
 export { diagnoseAgentPassport } from "./doctor.js";
+export { checkFetchable } from "./fetch-guard.js";
+export type { FetchGuardOptions } from "./fetch-guard.js";
 export type {
   CheckStatus,
   DiagnoseOptions,
@@ -118,6 +120,7 @@ import { canonicalBytes } from "./canonical.js";
 import { fetchSigningKeys } from "./dns.js";
 import { base64ToBytes } from "./encoding.js";
 import { BodyTooLargeError, readJsonCapped, withTimeout } from "./http.js";
+import { checkFetchable } from "./fetch-guard.js";
 
 const WELL_KNOWN_PATH = "/.well-known/agent-passport.json";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -285,6 +288,19 @@ export async function verifyAgentPassport(
   // 8. Revocation, once every other check has passed.
   if (errors.length === 0 && opts.checkRevocation !== false && passport.revocationListUrl) {
     const report = opts.revocationFailure === "error" ? errors : warnings;
+    // The revocation list is the issuer's own document, so it has to come from
+    // the issuer's own domain, the same way the signing key has to sit in the
+    // issuer's own zone. Without that a passport can point anyone who verifies
+    // it at any host it likes, which is a request the verifier's own network
+    // will happily make.
+    const unsafe = checkFetchable(passport.revocationListUrl, {
+      field: "revocationListUrl",
+      withinDomain: passport.issuer.domain,
+    });
+    if (unsafe) {
+      errors.push(unsafe);
+      return { ok: false, errors, warnings, passport };
+    }
     try {
       const res = await fetch(passport.revocationListUrl, {
         headers: { accept: "application/json" },

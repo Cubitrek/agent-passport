@@ -261,6 +261,7 @@ Verification errors:
 | `signer-key.no-matching-kid`, `signer-key.resolver-empty` | No key matches `signature.keyId`. |
 | `signature.invalid` | The signature is malformed or does not verify. |
 | `revocation.revoked` | `agent.id` is on the issuer's revocation list. |
+| `url.not-https`, `url.private-host`, `url.outside-issuer-domain`, `url.malformed` | A URL in the passport was refused before it was fetched. The revocation list has to be https and inside `issuer.domain`; the other URLs have to be https and not a loopback, link-local or private address. |
 
 Verification warnings (`ok` stays true):
 

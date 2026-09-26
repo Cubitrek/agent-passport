@@ -129,6 +129,12 @@ When the passport stops being valid. Verifiers must reject expired passports. Re
 
 A URL that returns a JSON array of revoked passport IDs (`agent.id` values). If absent, revocation is treated as out-of-band. Because entries are `agent.id` values, revoking an id also rejects any later passport that reuses it. Issue a new id revision (for example `-v2` becomes `-v3`) when replacing a revoked passport.
 
+It MUST be `https` and MUST be served from inside `issuer.domain`, on the same principle as `issuer.signingKeyDns` (§4.2). The revocation list is the issuer's own document, so it belongs on the issuer's own domain. Verifiers MUST refuse a passport whose `revocationListUrl` sits outside it, and MUST refuse before making the request rather than after.
+
+The reason is not tidiness. A verifier fetches this URL on behalf of whoever published the passport, from wherever that verifier runs, which is frequently a server that can reach things the public internet cannot: cloud instance metadata, a database on loopback, an internal admin page. Without this rule any passport can point any verifier at any host and use the response, or the timing of it, as a probe. See threat model §1.12.
+
+The same reasoning applies to every other URL a passport carries (`issuer.logo`, `issuer.contact.url`, `authority.termsUrl`, `agent.endpoints.*`). Those MAY be third party, since a logo on a shared CDN is legitimate, but a verifier that fetches them MUST refuse `http` and MUST refuse hosts that are loopback, link-local or private.
+
 ### 4.10 `signature` (required, object)
 
 | Field | Required | Type | Notes |

@@ -8,6 +8,7 @@
 
 import type { AgentPassport, VerificationError, VerifyResult } from "./types.js";
 import { verifyAgentPassport } from "./index.js";
+import { checkFetchable } from "./fetch-guard.js";
 import { daysUntilExpiry } from "./describe.js";
 import { readJsonCapped, withTimeout } from "./http.js";
 
@@ -290,6 +291,13 @@ async function revocationCheck(passport: AgentPassport, timeoutMs: number): Prom
       hint: "Publish a JSON array (start with []) and set revocationListUrl, or you cannot withdraw this agent before it expires.",
     };
   }
+  const unsafe = checkFetchable(passport.revocationListUrl, {
+    field: "revocationListUrl",
+    withinDomain: passport.issuer.domain,
+  });
+  if (unsafe) {
+    return { id: "revocation.list", status: "fail", title, detail: unsafe.message, hint: unsafe.hint };
+  }
   try {
     const res = await fetch(passport.revocationListUrl, {
       headers: { accept: "application/json" },
@@ -326,6 +334,14 @@ async function linkChecks(passport: AgentPassport, timeoutMs: number): Promise<H
     links
       .filter((l): l is { id: string; title: string; url: string; kind: LinkKind } => !!l.url)
       .map(async ({ id, title, url, kind }): Promise<HealthCheck> => {
+        // These may legitimately be third party, a logo on a CDN say, so they
+        // are not held to the issuer's domain. They are still someone else's
+        // text telling this process what to fetch, so the scheme and the host
+        // are checked before anything is requested.
+        const unsafeLink = checkFetchable(url, { field: id });
+        if (unsafeLink) {
+          return { id, status: "fail", title, detail: unsafeLink.message, hint: unsafeLink.hint };
+        }
         try {
           const res = await fetch(url, { signal: withTimeout(undefined, timeoutMs) });
           await res.body?.cancel().catch(() => {});
