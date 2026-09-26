@@ -154,7 +154,18 @@ export async function runGuard({
         continue;
       }
       if (message?.method === "tools/call" && message.id !== undefined) {
-        await guardCall(message);
+        try {
+          await guardCall(message);
+        } catch (err) {
+          // One call the guard could not work out must not take the guard down
+          // with it, and must not be forwarded either. Refuse it and carry on.
+          log(`${message.params?.name}: ${err?.message ?? err}`);
+          refuse(message.id, [
+            `Refused: the guard could not decide this call.`,
+            String(err?.message ?? err),
+            "This call was not sent to the server.",
+          ]);
+        }
       } else {
         if (message?.method === "tools/list" && message.id !== undefined) listRequests.add(message.id);
         toUpstream(message);

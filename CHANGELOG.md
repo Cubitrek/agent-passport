@@ -6,6 +6,11 @@ Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport-verifier`.
 
 ### Security
 
+- **A passport could send whoever verified it at a host of its choosing.** `revocationListUrl`, and the logo, terms, contact and endpoint URLs that `doctor` checks, were fetched wherever they pointed. Anyone could publish a passport, get it verified, and have the verifier request `http://169.254.169.254/latest/meta-data/`, a service on loopback, or an internal admin page, from inside the verifier's own network. `revocationListUrl` must now be `https` and inside `issuer.domain`, on the same principle that already applied to the signing key, and every other URL a passport carries must be `https` and must not be a loopback, link-local or private address. The check happens before the request, not after. Spec §4.9, threat model §1.12.
+- A policy's `when.matches` is refused at load when it has a quantifier applied to a group that already contains one, such as `(a+)+`. Those take exponential time, and the text they run against is a tool argument, so a long one would hang the guard for as long as it liked. Measured at 57 seconds for a 41-character input before the check.
+- The guard no longer stops when a single call cannot be decided. An argument it could not process used to take down the message loop, which left the guard running and answering nothing; now that one call is refused and the rest carry on.
+
+
 - **The verifier now rejects passports whose `issuer.signingKeyDns` is outside `issuer.domain`** (`issuer.signing-key-outside-domain`). Earlier versions fetched the key from whatever DNS name the passport gave. Anyone could write a passport naming any company as issuer, publish a key in a zone they control, sign it, and get `ok: true`. The spec already made domain ownership the root of trust (§2, threat model §1.1); §4.2 and §7 now state the requirement explicitly.
 - A malformed `signature.value` now returns `signature.invalid` instead of throwing.
 - Passport fetches no longer follow redirects (`fetch.redirect`), are capped at 256 KB (`fetch.too-large`), and every network call times out after 10 seconds by default (`timeoutMs`).

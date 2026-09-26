@@ -92,6 +92,14 @@ This document expands the §8 summary in the canonical spec. It enumerates the f
 
 **Residual risk.** Whoever can write the policy file or restart the process with different flags sets the limits. That is file-system and process control, which is outside what this layer can see.
 
+### 1.12 The verifier as someone else's errand boy
+
+**Scenario.** A passport is a document written by the party being checked, and several of its fields are URLs the verifier then requests. Anyone can publish one and get it looked at. Point `revocationListUrl` at `http://169.254.169.254/latest/meta-data/`, at a database on loopback, or at an internal admin page, and the verifier makes that request from inside its own network and reports on what came back. The response, the status code, or merely how long it took is enough to read a cloud credential endpoint or map a private network.
+
+**Mitigation.** The revocation list must be `https` and must be served from inside `issuer.domain` (§4.9), so a passport can only ever point a verifier back at the issuer. Every other URL a passport carries may be third party, but must be `https` and must not be a loopback, link-local or private address. The reference verifier checks before requesting, not after, and `agent-passport doctor` applies the same rule to the logo, terms, contact and endpoint checks.
+
+**Residual risk.** The checks are the portable ones, because the library runs in Workers and browsers where no name resolution is available. A public hostname that resolves to a private address, whether by configuration or by DNS rebinding between the check and the request, still gets through. Anything running this server-side should filter egress as well, and treat the verifier as it would any other component that fetches URLs supplied by strangers.
+
 ## 2. Threats explicitly out of scope
 
 ### 2.1 Transport security
