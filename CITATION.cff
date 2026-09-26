@@ -1,0 +1,51 @@
+cff-version: 1.2.0
+title: Agent Passport
+message: >-
+  If you refer to Agent Passport in published work, please cite the
+  specification. To cite the reference implementation in this repository
+  specifically, use the software entry below.
+abstract: >-
+  An open standard for verifiable, business-issued identity and authority for
+  AI agents that deal with other companies. A business publishes one signed
+  JSON file at /.well-known/agent-passport.json declaring which agent acts for
+  it, what that agent may do, how much it may commit, when a person takes over,
+  and where the audit trail lives. The signing key is published in the
+  business's own DNS, so a passport can be verified without a registry or any
+  third party. The repository carries the specification, a threat model, a
+  reference verifier, a command line tool and an MCP server.
+type: software
+authors:
+  - given-names: Faizan Ali
+    family-names: Khan
+    affiliation: Cubitrek
+    email: hello@cubitrek.com
+repository-code: https://github.com/Cubitrek/agent-passport
+url: https://cubitrek.com/agent-passport
+license: MIT
+version: 0.1.2
+keywords:
+  - agent passport
+  - AI agent identity
+  - AI agent authorization
+  - agentic AI
+  - AI governance
+  - Ed25519
+  - DNS
+  - Model Context Protocol
+  - Agent2Agent
+  - open standard
+preferred-citation:
+  type: standard
+  title: "Agent Passport, v0.1: verifiable identity and authority for AI agents across organisational boundaries"
+  authors:
+    - given-names: Faizan Ali
+      family-names: Khan
+      affiliation: Cubitrek
+  institution:
+    name: Cubitrek
+    website: https://cubitrek.com
+  year: 2026
+  month: 4
+  url: https://cubitrek.com/blog/agent-passport
+  repository-code: https://github.com/Cubitrek/agent-passport
+  license: MIT
