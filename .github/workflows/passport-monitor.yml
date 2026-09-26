@@ -1,0 +1,35 @@
+# Watch the passport this project publishes, with the action this project ships.
+#
+# Two jobs in one: it tells us when cubitrek.com's passport degrades, and it
+# exercises the action on a schedule, so a regression in the action surfaces
+# here rather than in someone else's repository.
+#
+# fail-on-warn is on deliberately. A warning on our own passport, including
+# the expiry runway, is the notification: a scheduled run that goes red is
+# what reaches a person.
+name: Passport monitor
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: Domain to check
+        required: false
+        default: cubitrek.com
+
+permissions:
+  contents: read
+
+jobs:
+  passport:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the published passport
+        uses: ./
+        with:
+          domain: ${{ inputs.domain || 'cubitrek.com' }}
+          warn-days: "21"
+          fail-on-warn: "true"
