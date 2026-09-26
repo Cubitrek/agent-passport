@@ -59,6 +59,103 @@ limit, and letting it pass would quietly defeat the cap.
 default, a person decides), `deny`, or `allow`. `allow` means the tool is not
 governed and leaves no receipt, which is worth knowing before you choose it.
 
+## claude-code.json
+
+Limits on the assistant running on your own machine, applied through a Claude
+Code hook rather than a proxy. This one sees the built-in tools too, so it can
+speak about `Bash`, `Write` and `Edit`, not only MCP tools.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": "agent-passport",
+          "args": ["hook", "--policy", "/abs/path/claude-code.json",
+                   "--ledger", "/abs/path/spend.jsonl",
+                   "--receipts", "/abs/path/receipts.jsonl"]
+        }]
+      }
+    ]
+  }
+}
+```
+
+Two things it does differently from the proxy.
+
+**An escalation becomes a prompt.** Claude Code can put the question to the
+person at the keyboard, so `ask` is a real answer here rather than a refusal
+with a phone number in it.
+
+**An allowed call is answered with nothing at all.** Saying `allow` would
+bypass Claude Code's own permission prompts, so a policy that said yes would
+quietly approve things you would otherwise have been asked about. The guard
+narrows what may happen and never widens it. Pass `--skip-prompt-on-allow` if
+you want the policy to be the last word.
+
+### Check the hook is actually running
+
+A hook whose command cannot be found exits non-zero, and Claude Code treats
+that as "carry on". So a typo in the path means no guard at all, quietly. That
+part is outside what this tool can defend against, so confirm it once by hand:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}' \
+  | agent-passport hook --policy /abs/path/claude-code.json
+```
+
+You should get a `deny` back. If you get nothing, or an error, the hook is not
+wired up and Claude Code is running unguarded.
+
+Until the package is on npm, `command` has to point at the checkout:
+
+```json
+"command": "node",
+"args": ["/abs/path/agent-passport/packages/verifier/bin/agent-passport.mjs",
+         "hook", "--policy", "/abs/path/claude-code.json",
+         "--ledger", "/abs/path/spend.jsonl"]
+```
+
+### Rules that say so outright
+
+Some shapes are not a question of scope or budget, they are simply not on. A
+rule can say that directly with `effect`, and skip the authority entirely:
+
+```json
+{
+  "match": "Bash",
+  "when": { "path": "args.command",
+            "matches": "(^|[;&|]\\s*)(sudo\\b|rm\\s+-[a-zA-Z]*[rf]|shutdown\\b|mkfs\\b)" },
+  "effect": "deny",
+  "note": "Destructive shell commands are not granted, so they are refused."
+}
+```
+
+`effect` is `deny` or `ask`. Because the first matching rule wins, put these
+above the general rule for the same tool: `rm -rf` is refused, and every other
+`Bash` call falls through to `shell.run`.
+
+### What command matching can and cannot do
+
+Matching a shell command with a regular expression catches mistakes and the
+obvious cases. It is not a boundary against someone trying to get past it. An
+agent that wanted to could write `r""m -rf`, build the command from variables,
+or base64 it, and no pattern of this kind would see it coming.
+
+Treat these rules as a seatbelt rather than a lock. The real control is the
+scope list: an agent that is never granted `shell.run` cannot run a shell at
+all, however the command is spelled.
+
+### What it counts
+
+A call is counted when it is allowed, before it runs, because nothing tells the
+hook afterwards whether it did. That over-counts a tool that fails, and a
+prompt you decline. It is the safe direction, and for priced tools the proxy is
+the better surface because it settles against what actually happened.
+
 ## What the agent sees
 
 The guard annotates the tool list, so the model knows the rules before it tries:

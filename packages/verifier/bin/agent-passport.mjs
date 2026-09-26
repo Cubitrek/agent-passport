@@ -59,6 +59,8 @@ Decide and guard one action
 Put limits on your own agent
   guard --policy <f> -- <cmd>   Run an MCP server behind your policy, so every
                                 tool call is decided before it reaches it
+  hook --policy <f>             Claude Code PreToolUse hook: decide every tool
+                                call it makes, including Bash, Write and Edit
   log --receipts <f>            What the guard has decided, and what it cost
 
 Connect an AI client
@@ -183,6 +185,47 @@ held to a limit.
 --ledger counts spending across calls and across runs, and is required whenever
 the policy sets a limit. --receipts records every decision, which
 "agent-passport log" reads back.`,
+  hook: `agent-passport hook --policy <policy.json> [--ledger <spend.jsonl>]
+    [--receipts <receipts.jsonl>] [--skip-prompt-on-allow]
+
+A Claude Code PreToolUse hook. Claude Code hands it every tool call before the
+call runs, and honours the answer. Add it in .claude/settings.json:
+
+  {
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "*",
+          "hooks": [{
+            "type": "command",
+            "command": "agent-passport",
+            "args": ["hook", "--policy", "/abs/path/policy.json",
+                     "--ledger", "/abs/path/spend.jsonl",
+                     "--receipts", "/abs/path/receipts.jsonl"]
+          }]
+        }
+      ]
+    }
+  }
+
+The matcher decides which tools reach the hook: "*" for all of them, "Bash" for
+one, "mcp__stripe__.*" for one server. Unlike the guard, this sees the built-in
+tools too, so a rule can match Bash, Write or Edit.
+
+An escalation becomes a real prompt here rather than a refusal, because Claude
+Code can ask the person at the keyboard.
+
+Two things this deliberately does not do. It never exits non-zero, because that
+tells Claude Code to carry on: every failure, including a missing policy, comes
+back as a refusal instead. And an allowed call gets no answer at all, so Claude
+Code's own permission prompts still happen; the guard narrows what may happen
+and never widens it. Pass --skip-prompt-on-allow if you want the policy to be
+the final word and the prompt skipped.
+
+A call is counted when it is allowed, before it runs, because nothing tells the
+hook afterwards whether it did. That over-counts a tool that fails or a prompt
+you decline. Use "guard" for priced tools, which settles against what actually
+happened.`,
   log: `agent-passport log --receipts <receipts.jsonl> [--json]
 
 What the guard has decided, and what it cost. One line per decision: when, what
@@ -200,7 +243,7 @@ your own agent's actions and inbound ones. Add --ledger to count spend across
 calls, so a cap over a day or a month is enforced rather than restated.`,
 };
 
-const BOOLEAN_FLAGS = new Set(["json", "yes", "force", "offline", "no-links", "no-revocation", "request-key", "commit", "release", "help"]);
+const BOOLEAN_FLAGS = new Set(["json", "yes", "force", "offline", "no-links", "no-revocation", "request-key", "commit", "release", "skip-prompt-on-allow", "help"]);
 
 const color = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code) => (s) => (color ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -678,6 +721,51 @@ async function logCommand(flags) {
   );
 }
 
+/**
+ * The Claude Code hook. It handles its own failures rather than using fail(),
+ * because exiting non-zero tells Claude Code to carry on with the tool call.
+ * A guard that fails open is not a guard, so every problem here comes back as
+ * a refusal the person can read.
+ */
+async function hook(flags) {
+  const refuse = (reason) => {
+    process.stdout.write(
+      `${JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: reason,
+        },
+      })}\n`,
+    );
+    process.exitCode = 0;
+  };
+
+  try {
+    if (typeof flags.policy !== "string") {
+      return refuse("The Agent Passport hook has no --policy, so it cannot say whether this is allowed.");
+    }
+    const policy = readJson(resolve(expandHome(flags.policy)));
+    const authority = localPolicy(policy);
+    if (authority.ceilings.length && typeof flags.ledger !== "string") {
+      return refuse(
+        `The policy "${policy.id}" sets a limit and the hook has no --ledger, so nothing is counting against it.`,
+      );
+    }
+    const { runHook } = await import("./hook.mjs");
+    process.exitCode = await runHook({
+      policy,
+      authority,
+      ledger: typeof flags.ledger === "string" ? fileSpendLedger(resolve(expandHome(flags.ledger))) : undefined,
+      receipts: typeof flags.receipts === "string" ? fileReceiptSink(resolve(expandHome(flags.receipts))) : undefined,
+      engagementId: flags.engagement,
+      skipPromptOnAllow: flags["skip-prompt-on-allow"] === true,
+    });
+  } catch (err) {
+    refuse(`The Agent Passport hook failed, so it refused the call: ${err?.message ?? err}`);
+  }
+}
+
 async function mcp(flags) {
   const { runMcpServer } = await import("./mcp.mjs");
   await runMcpServer({
@@ -687,7 +775,7 @@ async function mcp(flags) {
   });
 }
 
-const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, settle, guard, log: logCommand, mcp };
+const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, settle, guard, hook, log: logCommand, mcp };
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);

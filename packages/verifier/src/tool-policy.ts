@@ -15,11 +15,33 @@
 import type { AuthorizationRequest, AuthorizedAction } from "./authorize.js";
 import type { VerificationError } from "./types.js";
 
+/** An extra condition on a rule, so one tool can be governed several ways. */
+export interface ToolCondition {
+  /** Where to look, as a dotted path from the call, e.g. "args.command". */
+  path: string;
+  /** A regular expression the value has to match, as a string. */
+  matches: string;
+}
+
 export interface ToolRule {
   /** Tool name, or a pattern where `*` stands for any run of characters. */
   match: string;
+  /**
+   * Short-circuit this rule to an outcome without consulting the authority.
+   * For shapes that are simply not on, such as `rm -rf` or a piped installer,
+   * where saying so outright is clearer than routing it through a scope the
+   * policy happens not to grant.
+   */
+  effect?: "deny" | "ask";
+  /**
+   * Only apply this rule when the call also looks like this. Lets one tool be
+   * governed several ways: `rm -rf` under a scope you do not grant, and
+   * everything else under one you do. A rule whose condition does not hold is
+   * skipped, and the next rule gets its turn.
+   */
+  when?: ToolCondition;
   /** The scope this tool exercises, checked against the policy's scope list. */
-  scope: string;
+  scope?: string;
   /** Where the value lives, as a dotted path from the call, e.g. "args.amount". */
   amountFrom?: string;
   /** "major" (5000 means 5,000 USD) or "minor" (500000 means 5,000 USD). Default major. */
@@ -44,7 +66,13 @@ export interface ToolCall {
 
 export type ToolMapping =
   | { ok: true; request: AuthorizationRequest; rule: ToolRule }
-  | { ok: false; errors: VerificationError[]; rule?: ToolRule };
+  | {
+      ok: false;
+      errors: VerificationError[];
+      rule?: ToolRule;
+      /** Set when a rule said so outright, rather than a mapping problem. */
+      effect?: "deny" | "ask";
+    };
 
 /** A `*` pattern, anchored, with everything else taken literally. */
 function matches(pattern: string, name: string): boolean {
@@ -54,9 +82,26 @@ function matches(pattern: string, name: string): boolean {
   return new RegExp(`^${escaped}$`).test(name);
 }
 
-/** First matching rule wins, so order in the policy is the operator's priority. */
-export function ruleFor(rules: ToolRule[] | undefined, name: string): ToolRule | undefined {
-  return (rules ?? []).find((r) => matches(r.match, name));
+/**
+ * First matching rule wins, so order in the policy is the operator's priority.
+ * Put the narrow rules above the broad ones.
+ */
+export function ruleFor(
+  rules: ToolRule[] | undefined,
+  name: string,
+  call?: ToolCall,
+): ToolRule | undefined {
+  return (rules ?? []).find((rule) => {
+    if (!matches(rule.match, name)) return false;
+    if (!rule.when) return true;
+    // Without the call in hand a conditional rule cannot be judged, so it is
+    // reported as matching: the describe path wants to mention it, and the
+    // decide path always passes the call.
+    if (!call) return true;
+    const value = readPath(call, rule.when.path);
+    if (value === undefined || value === null) return false;
+    return new RegExp(rule.when.matches).test(String(value));
+  });
 }
 
 function readPath(call: ToolCall, path: string): unknown {
@@ -81,7 +126,7 @@ export function toolRequest(
   rules: ToolRule[] | undefined,
   extra: Partial<AuthorizationRequest> = {},
 ): ToolMapping {
-  const rule = ruleFor(rules, call.name);
+  const rule = ruleFor(rules, call.name, call);
   if (!rule) {
     return {
       ok: false,
@@ -95,13 +140,32 @@ export function toolRequest(
     };
   }
 
+  if (rule.effect) {
+    return {
+      ok: false,
+      rule,
+      effect: rule.effect,
+      errors: [
+        {
+          code: rule.effect === "deny" ? "tool.refused-by-rule" : "tool.needs-a-person",
+          message:
+            rule.note ??
+            (rule.effect === "deny"
+              ? `The policy refuses "${call.name}" calls that look like this.`
+              : `The policy wants a person to look at "${call.name}" calls that look like this.`),
+          hint: rule.when ? `The rule matched ${rule.when.path} against /${rule.when.matches}/.` : undefined,
+        },
+      ],
+    };
+  }
+
   const action: AuthorizedAction = { tool: call.name, args: call.args };
   if (rule.targetFrom) {
     const target = readPath(call, rule.targetFrom);
     if (typeof target === "string" || typeof target === "number") action.target = String(target);
   }
 
-  const request: AuthorizationRequest = { scope: rule.scope, action, ...extra };
+  const request: AuthorizationRequest = { scope: rule.scope!, action, ...extra };
 
   if (rule.amountFrom) {
     const raw = readPath(call, rule.amountFrom);
@@ -132,7 +196,17 @@ export function toolRequest(
 
 /** The note a guarded tool carries on tools/list, so the model knows the rules. */
 export function describeRule(rule: ToolRule, limits: string | undefined): string {
+  if (rule.effect) {
+    const what = rule.effect === "deny" ? "Refused by local policy" : "Sent to a person by local policy";
+    return [
+      `${what}${rule.when ? ` when ${rule.when.path} matches /${rule.when.matches}/` : ""}.`,
+      rule.note,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
   const parts = [`Governed by local policy as "${rule.scope}".`];
+  if (rule.when) parts.push(`That applies when ${rule.when.path} matches /${rule.when.matches}/.`);
   // Only a tool that carries a value can be held to a spending limit, so only
   // those are told about one. Naming a cap on a read-only tool reads as though
   // the cap applies, and it does not.
