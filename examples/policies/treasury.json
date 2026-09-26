@@ -1,0 +1,32 @@
+{
+  "id": "treasury-local",
+  "agentId": "claude-code",
+  "label": "the local treasury policy",
+
+  "scope": ["payments.charge", "payments.read"],
+
+  "limits": [
+    { "amount": 5000, "currency": "USD", "window": "day", "label": "your daily cap" },
+    { "amount": 40000, "currency": "USD", "window": "month", "label": "your monthly cap" }
+  ],
+
+  "humanInLoop": {
+    "above": { "amount": 500, "currency": "USD" },
+    "escalation": "finance@yourcompany.example",
+    "slaHours": 4
+  },
+
+  "tools": [
+    {
+      "match": "stripe.create_charge",
+      "scope": "payments.charge",
+      "amountFrom": "args.amount",
+      "amountUnit": "minor",
+      "targetFrom": "args.customer"
+    },
+    { "match": "stripe.list_*", "scope": "payments.read" },
+    { "match": "stripe.get_*", "scope": "payments.read" }
+  ],
+
+  "unmatched": "escalate"
+}

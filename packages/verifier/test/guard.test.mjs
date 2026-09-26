@@ -25,7 +25,7 @@ import {
   signReceipt,
   verifyReceipt,
 } from "../dist/index.js";
-import { fileSpendLedger } from "../dist/ledger-node.js";
+import { fileSpendLedger } from "../dist/node.js";
 
 const NOW = new Date("2026-06-10T09:00:00Z");
 const now = () => NOW;

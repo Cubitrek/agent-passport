@@ -24,7 +24,7 @@ import {
   type Receipt,
   type SpendLedger,
 } from "../../dist/index.js";
-import { fileSpendLedger } from "../../dist/ledger-node.js";
+import { fileSpendLedger } from "../../dist/node.js";
 
 declare const privateKey: Uint8Array;
 declare const publicKeyRaw: Uint8Array;
