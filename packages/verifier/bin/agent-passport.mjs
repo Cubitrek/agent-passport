@@ -24,14 +24,16 @@ import {
   guessEndpointType,
   intersect,
   isoSeconds,
+  APPROVAL_CONTEXT,
   localPolicy,
   passportAuthority,
+  signApproval,
   requestKeyEntry,
   signAgentPassport,
   validate,
   verifyAgentPassport,
 } from "../dist/index.js";
-import { fileReceiptSink, fileSpendLedger, readReceipts } from "../dist/node.js";
+import { fileApprovalStore, fileReceiptSink, fileSpendLedger, readReceipts } from "../dist/node.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(here, "../package.json"), "utf8")).version;
@@ -61,6 +63,8 @@ Put limits on your own agent
                                 tool call is decided before it reaches it
   hook --policy <f>             Claude Code PreToolUse hook: decide every tool
                                 call it makes, including Bash, Write and Edit
+  approvals --approvals <f>     What is waiting for a person to answer
+  approve <id> / decline <id>   Answer one of them
   log --receipts <f>            What the guard has decided, and what it cost
 
 Connect an AI client
@@ -184,7 +188,12 @@ held to a limit.
 
 --ledger counts spending across calls and across runs, and is required whenever
 the policy sets a limit. --receipts records every decision, which
-"agent-passport log" reads back.`,
+"agent-passport log" reads back.
+
+--approvals turns an escalation into something answerable. Without it a call
+that needs a person is simply refused; with it the call leaves a request behind
+that "agent-passport approve" can say yes to, and the same call goes through
+next time.`,
   hook: `agent-passport hook --policy <policy.json> [--ledger <spend.jsonl>]
     [--receipts <receipts.jsonl>] [--skip-prompt-on-allow]
 
@@ -226,6 +235,36 @@ A call is counted when it is allowed, before it runs, because nothing tells the
 hook afterwards whether it did. That over-counts a tool that fails or a prompt
 you decline. Use "guard" for priced tools, which settles against what actually
 happened.`,
+  approvals: `agent-passport approvals --approvals <approvals.jsonl> [--all] [--json]
+
+What is waiting for a person to answer. A call the policy escalated stops and
+leaves a request behind; this is how you see it. --all includes the ones
+already answered.
+
+Unlike a receipt, a request shows the arguments in full. Nobody can approve
+what they cannot see, and this file is yours rather than something handed to a
+counterparty.`,
+  approve: `agent-passport approve <id> --approvals <approvals.jsonl>
+    [--key <approver.pem> --kid <keyId>] [--by <name>] [--note <text>]
+
+Says yes to one waiting call. The approval is for that exact call: the same
+tool, the same target, the same arguments, the same amount. Change any of them
+and it no longer matches, because what ties an approval to a call is the digest
+of the call itself. It is good once, and only until the window closes.
+
+  agent-passport approvals --approvals ~/.agent-passport/approvals.jsonl
+  agent-passport approve a1b2c3d4 --approvals ~/.agent-passport/approvals.jsonl \\
+    --key ~/.agent-passport/keys/approver.pem --kid approver-2026 --by faizan
+
+Sign it whenever the agent can run a shell, because then it can also run this
+command. A policy that lists "approvers" takes only signed answers, from those
+keys, which is the part an agent cannot forge. Without that list anything in
+the file counts, and that is only safe where the agent cannot write to it.`,
+  decline: `agent-passport decline <id> --approvals <approvals.jsonl>
+    [--key <approver.pem> --kid <keyId>] [--by <name>] [--note <text>]
+
+Says no. Final: a declined request is not reopened, and the same call has to be
+escalated afresh to be asked again.`,
   log: `agent-passport log --receipts <receipts.jsonl> [--json]
 
 What the guard has decided, and what it cost. One line per decision: when, what
@@ -243,7 +282,7 @@ your own agent's actions and inbound ones. Add --ledger to count spend across
 calls, so a cap over a day or a month is enforced rather than restated.`,
 };
 
-const BOOLEAN_FLAGS = new Set(["json", "yes", "force", "offline", "no-links", "no-revocation", "request-key", "commit", "release", "skip-prompt-on-allow", "help"]);
+const BOOLEAN_FLAGS = new Set(["json", "yes", "force", "offline", "no-links", "no-revocation", "request-key", "commit", "release", "skip-prompt-on-allow", "all", "help"]);
 
 const color = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code) => (s) => (color ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -684,7 +723,80 @@ async function guard(flags, _positional, tail) {
     ledger: typeof flags.ledger === "string" ? fileSpendLedger(resolve(expandHome(flags.ledger))) : undefined,
     receipts: typeof flags.receipts === "string" ? fileReceiptSink(resolve(expandHome(flags.receipts))) : undefined,
     engagementId: flags.engagement,
+    approvals: typeof flags.approvals === "string" ? fileApprovalStore(resolve(expandHome(flags.approvals))) : undefined,
   });
+}
+
+/** What is waiting for an answer, and what has been answered. */
+async function approvals(flags) {
+  if (typeof flags.approvals !== "string") fail(HELP.approvals);
+  const store = fileApprovalStore(resolve(expandHome(flags.approvals)));
+  const all = [...store.state().values()];
+  const shown = flags.all ? all : all.filter((s) => s.status === "pending");
+  if (flags.json) {
+    process.stdout.write(json(shown));
+    return;
+  }
+  if (!shown.length) {
+    console.log(flags.all ? `Nothing in ${flags.approvals}.` : "Nothing is waiting for an answer.");
+    return;
+  }
+  const now = new Date();
+  for (const { request, status, answer } of shown) {
+    const amount = request.request.amount
+      ? `${request.request.amount.amount.toLocaleString("en-US")} ${request.request.amount.currency}`
+      : "no value";
+    const stale = Date.parse(request.expiresAt) <= now.getTime();
+    const label = { pending: yellow("WAITING"), approved: green("APPROVED"), declined: red("DECLINED"), used: dim("USED") }[status];
+    console.log(`\n${bold(request.id)}  ${label}${stale && status === "pending" ? red("  (window closed)") : ""}`);
+    console.log(`  ${request.request.action?.tool ?? request.request.scope}  ${amount}`);
+    if (request.request.action?.target) console.log(`  on ${request.request.action.target}`);
+    console.log(`  ${dim(request.reasons.join(", "))}`);
+    console.log(`  ${dim(`asked ${request.at.replace("T", " ").slice(0, 19)}, window closes ${request.expiresAt.replace("T", " ").slice(0, 19)}`)}`);
+    if (request.request.action?.args !== undefined) {
+      console.log(`  ${dim(JSON.stringify(request.request.action.args).slice(0, 160))}`);
+    }
+    if (answer) {
+      console.log(`  ${dim(`${answer.status} ${answer.at.replace("T", " ").slice(0, 19)}${answer.by ? ` by ${answer.by}` : ""}${answer.note ? `: ${answer.note}` : ""}`)}`);
+    }
+  }
+  const waiting = all.filter((s) => s.status === "pending").length;
+  console.log(`\n${shown.length} shown, ${waiting} waiting for an answer.`);
+}
+
+async function answerApproval(flags, [id], status) {
+  if (!id || typeof flags.approvals !== "string") fail(HELP[status === "approved" ? "approve" : "decline"]);
+  const store = fileApprovalStore(resolve(expandHome(flags.approvals)));
+  const found = store.state().get(id);
+  if (!found) fail(`No request ${id} in ${flags.approvals}.`);
+  if (found.status !== "pending") fail(`Request ${id} was already ${found.status}.`);
+
+  let answer = {
+    context: APPROVAL_CONTEXT,
+    kind: "answer",
+    id,
+    digest: found.request.digest,
+    status,
+    at: isoSeconds(new Date()),
+    by: typeof flags.by === "string" ? flags.by : undefined,
+    note: typeof flags.note === "string" ? flags.note : undefined,
+  };
+  if (typeof flags.key === "string") {
+    const kid = typeof flags.kid === "string" ? flags.kid : defaultKeyId("approver");
+    answer = await signApproval(answer, { keyId: kid, privateKey: loadKey(flags.key).pkcs8 });
+  }
+  store.answer(answer);
+
+  const amount = found.request.request.amount
+    ? ` for ${found.request.request.amount.amount.toLocaleString("en-US")} ${found.request.request.amount.currency}`
+    : "";
+  console.log(
+    `${status === "approved" ? green("Approved") : red("Declined")} ${id}: ${found.request.request.action?.tool ?? found.request.request.scope}${amount}.` +
+      (status === "approved" ? ` The window closes ${found.request.expiresAt.replace("T", " ").slice(0, 19)}.` : ""),
+  );
+  if (status === "approved" && !answer.signature) {
+    console.log(dim("  Unsigned. A policy that names approvers will not accept this; pass --key to sign it."));
+  }
 }
 
 async function logCommand(flags) {
@@ -759,7 +871,8 @@ async function hook(flags) {
       ledger: typeof flags.ledger === "string" ? fileSpendLedger(resolve(expandHome(flags.ledger))) : undefined,
       receipts: typeof flags.receipts === "string" ? fileReceiptSink(resolve(expandHome(flags.receipts))) : undefined,
       engagementId: flags.engagement,
-      skipPromptOnAllow: flags["skip-prompt-on-allow"] === true,
+        skipPromptOnAllow: flags["skip-prompt-on-allow"] === true,
+      approvals: typeof flags.approvals === "string" ? fileApprovalStore(resolve(expandHome(flags.approvals))) : undefined,
     });
   } catch (err) {
     refuse(`The Agent Passport hook failed, so it refused the call: ${err?.message ?? err}`);
@@ -775,7 +888,10 @@ async function mcp(flags) {
   });
 }
 
-const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, settle, guard, hook, log: logCommand, mcp };
+const COMMANDS = { init, keygen, "request-key": requestKey, sign, renew, doctor, verify, authorize: authorizeCommand, settle, guard, hook, approvals,
+  approve: (f, p) => answerApproval(f, p, "approved"),
+  decline: (f, p) => answerApproval(f, p, "declined"),
+  log: logCommand, mcp };
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);

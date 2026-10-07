@@ -65,6 +65,15 @@ export type {
 } from "./receipt.js";
 export { checkAndHold, guardedCall, memoryReceiptSink } from "./guard.js";
 export { describeRule, ruleFor, runawayRegex, toolRequest } from "./tool-policy.js";
+export { APPROVAL_CONTEXT, approvalId, buildApprovalRequest, checkApproval, foldApprovals, signApproval } from "./approval.js";
+export type {
+  ApprovalAnswer,
+  ApprovalCheck,
+  ApprovalEntry,
+  ApprovalRequest,
+  ApprovalState,
+  ApproverKey,
+} from "./approval.js";
 export type { ToolCall, ToolCondition, ToolMapping, ToolRule, UnmatchedPolicy } from "./tool-policy.js";
 export type { CheckAndHoldResult, GuardOptions, GuardResult, Hold } from "./guard.js";
 export {
