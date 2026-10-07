@@ -74,6 +74,21 @@ export type ToolMapping =
       effect?: "deny" | "ask";
     };
 
+/**
+ * The shapes that make a regular expression take exponential time: a group
+ * that already contains a quantifier, with another quantifier applied to the
+ * whole group. `(a+)+` against forty characters takes the better part of a
+ * minute, and the text being matched is a tool argument, which is exactly
+ * what an injected instruction gets to choose.
+ *
+ * This is a heuristic and catches the common accidental forms rather than
+ * every possible one. A pattern in a policy is operator-supplied code; keep
+ * it simple.
+ */
+export function runawayRegex(pattern: string): boolean {
+  return /\([^()]*[+*}][^()]*\)\s*(?:[+*]|\{\d+,\s*\})/.test(pattern);
+}
+
 /** A `*` pattern, anchored, with everything else taken literally. */
 function matches(pattern: string, name: string): boolean {
   if (pattern === name) return true;

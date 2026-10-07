@@ -20,6 +20,7 @@ import type {
   VerifyResult,
 } from "./types.js";
 import type { ToolRule, UnmatchedPolicy } from "./tool-policy.js";
+import { runawayRegex } from "./tool-policy.js";
 
 export type DataClassification = NonNullable<PassportCompliance["dataClassification"]>;
 
@@ -225,6 +226,12 @@ export function localPolicy(policy: LocalPolicy): Authority {
       } catch (err) {
         throw new TypeError(
           `when.matches on "${rule.match}" in policy ${policy.id} is not a valid regular expression: ${(err as Error).message}`,
+        );
+      }
+      if (runawayRegex(rule.when.matches)) {
+        throw new TypeError(
+          `when.matches on "${rule.match}" in policy ${policy.id} can take exponential time: a quantifier applied to a group that already contains one, such as (a+)+. ` +
+            `The text it runs against is a tool argument, so a long one would hang the guard. Rewrite it without the nested quantifier.`,
         );
       }
     }
