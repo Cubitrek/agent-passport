@@ -163,6 +163,8 @@ The policy needs a `tools` list, because only you know that `stripe.create_charg
 
 A 9,000 USD charge against that policy comes back to the agent as a refusal naming the cap, and the Stripe server never hears about it. A tool no rule covers is escalated rather than waved through, and a rule whose `amountFrom` finds no number is refused, because a call whose value cannot be read cannot be held to a limit.
 
+Money is held when a call is decided and counted only once the server says it acted. A server error hands the amount back, and so does a server that asks the client for more input before acting (MCP 2026-07-28, `input_required`): the retry is a call of its own and is decided afresh.
+
 The guard also annotates the tool list, so the model knows the rules before it tries. A worked policy with every field explained is in [`examples/policies`](./examples/policies).
 
 ### Or put it in front of Claude Code itself

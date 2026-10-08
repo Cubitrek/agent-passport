@@ -310,3 +310,76 @@ test("a policy with limits and no ledger says so at startup, not at the first ca
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a server that asks for more input did not act, so nothing counts until the retry runs", () => {
+  const dir = temp();
+  try {
+    // MCP 2026-07-28 lets a server answer tools/call with resultType
+    // "input_required" instead of acting. The client then retries the same
+    // call under a new id, carrying inputResponses and requestState. The first
+    // attempt moved no money, so it must not be counted; the retry is a call
+    // of its own and is decided afresh.
+    const ask = { amount: 190_000, customer: "cus_ask", ask: true }; // 1,900 USD
+    const retry = {
+      jsonrpc: "2.0", id: 11, method: "tools/call",
+      params: { name: "stripe.create_charge", arguments: ask, inputResponses: { confirm: { action: "accept", content: { ok: true } } }, requestState: "stub-state" },
+    };
+    const first = runGuard(dir, {
+      messages: [call(10, "stripe.create_charge", ask), retry],
+      ledger: "spend.jsonl",
+      receipts: "receipts.jsonl",
+      reset: true,
+    });
+    assert.equal(first.replies.get(10).result?.resultType, "input_required", "the ask reaches the client untouched");
+    assert.equal(first.replies.get(10).result?.requestState, "stub-state");
+    assert.equal(blocked(first.replies.get(11)), false, "the answered retry goes through");
+    assert.deepEqual(first.received.map((r) => r.args.customer), ["cus_ask", "cus_ask"]);
+
+    // One reservation was handed back, one was kept.
+    const entries = readFileSync(join(dir, "spend.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(entries.map((e) => e.state).sort(), ["committed", "released", "reserved", "reserved"]);
+
+    // The trail says so: the first attempt did not run, and names why.
+    const receipts = JSON.parse(spawnSync(process.execPath, [cli, "log", "--receipts", join(dir, "receipts.jsonl"), "--json"], { encoding: "utf8" }).stdout);
+    assert.deepEqual(receipts.map((r) => r.outcome).sort(), ["blocked", "executed"]);
+    assert.deepEqual(receipts.find((r) => r.outcome === "blocked").blockedBecause, ["execution.input-required"]);
+
+    // And only 1,900 of the 5,000 is gone: a second 1,900 fits, a third does not.
+    const second = runGuard(dir, {
+      messages: [
+        call(12, "stripe.create_charge", { amount: 190_000, customer: "cus_3" }), // 3,800 so far
+        call(13, "stripe.create_charge", { amount: 190_000, customer: "cus_4" }), // 5,700: over the cap
+      ],
+      ledger: "spend.jsonl",
+    });
+    assert.equal(blocked(second.replies.get(12)), false, "the attempt that did not run must not have been counted");
+    assert.equal(blocked(second.replies.get(13)), true, "and the cap still holds once the money is really spent");
+    assert.match(text(second.replies.get(13)), /amount\.above-ceiling/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a refusal carries resultType only when the client speaks MCP 2026-07-28", () => {
+  const dir = temp();
+  try {
+    // From 2026-07-28 every request names its protocol revision in _meta and
+    // every result carries resultType. An older client has never seen the
+    // field, so a refusal to it keeps the shape it knows.
+    const meta = {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": { name: "t", version: "1" },
+      "io.modelcontextprotocol/clientCapabilities": {},
+    };
+    const newer = { jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "stripe.create_charge", arguments: { amount: 900_000, customer: "c" }, _meta: meta } };
+    const older = call(21, "stripe.create_charge", { amount: 900_000, customer: "c" });
+    const { replies, received } = runGuard(dir, { messages: [newer, older], ledger: "spend.jsonl", reset: true });
+    assert.equal(received.length, 0, "both are over the cap and never reach the server");
+    assert.equal(blocked(replies.get(20)), true);
+    assert.equal(replies.get(20).result.resultType, "complete");
+    assert.equal(blocked(replies.get(21)), true);
+    assert.equal("resultType" in replies.get(21).result, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

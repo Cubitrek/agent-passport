@@ -275,3 +275,56 @@ test("without --approvals an escalation is still simply refused", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** Run one guard session with several tool calls, returning the replies by id. */
+function session(dir, params, { policy = POLICY } = {}) {
+  writeFileSync(join(dir, "policy.json"), JSON.stringify(policy));
+  const messages = [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "c", version: "1" } } },
+    ...params.map((p, i) => ({ jsonrpc: "2.0", id: 10 + i, method: "tools/call", params: p })),
+  ];
+  const proc = spawnSync(process.execPath, [
+    cli, "guard", "--policy", join(dir, "policy.json"),
+    "--ledger", join(dir, "spend.jsonl"), "--approvals", join(dir, "approvals.jsonl"),
+    "--", process.execPath, stub,
+  ], { input: `${messages.map((m) => JSON.stringify(m)).join("\n")}\n`, encoding: "utf8", timeout: 30_000, env: { ...process.env, STUB_LOG: join(dir, "stub.log") } });
+  const replies = new Map();
+  for (const line of (proc.stdout || "").trim().split("\n")) {
+    if (!line.trim()) continue;
+    const m = JSON.parse(line);
+    replies.set(m.id, m);
+  }
+  return replies;
+}
+
+test("a server that asks for more input first does not spend the approval", () => {
+  const dir = temp();
+  try {
+    // 2,500 needs a person. Once approved, the server (MCP 2026-07-28) asks
+    // the client for more input instead of acting. Nothing ran, so the
+    // approval must still be good for the retry, and spent by it. One session
+    // per step, so each reply has landed before the next call is decided.
+    const args = { amount: 250_000, customer: "cus_ask", ask: true };
+    const answered = { confirm: { action: "accept", content: { ok: true } } };
+    const status = () => JSON.parse(run("approvals", "--approvals", join(dir, "approvals.jsonl"), "--all", "--json").stdout).map((s) => s.status);
+
+    const waitingReply = session(dir, [{ name: "stripe.create_charge", arguments: args }]);
+    assert.equal(waitingReply.get(10).result?.isError, true, "first it waits for a person");
+    run("approve", waiting(dir)[0].request.id, "--approvals", join(dir, "approvals.jsonl"), "--by", "faizan");
+    assert.deepEqual(status(), ["approved"]);
+
+    const asked = session(dir, [{ name: "stripe.create_charge", arguments: args }]);
+    assert.equal(asked.get(10).result?.resultType, "input_required", "the server asked instead of acting");
+    assert.deepEqual(status(), ["approved"], "nothing ran, so the approval is not spent");
+
+    const ran = session(dir, [{ name: "stripe.create_charge", arguments: args, inputResponses: answered, requestState: "stub-state" }]);
+    assert.match(ran.get(10).result?.content?.[0]?.text ?? "", /did stripe\.create_charge/, "the retry is covered by the approval");
+    assert.deepEqual(status(), ["used"], "and spent by the call that ran");
+
+    const again = session(dir, [{ name: "stripe.create_charge", arguments: args, inputResponses: answered, requestState: "stub-state" }]);
+    assert.equal(again.get(10).result?.isError, true);
+    assert.match(again.get(10).result?.content?.[0]?.text ?? "", /already been used/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
