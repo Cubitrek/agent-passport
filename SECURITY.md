@@ -15,7 +15,7 @@ We acknowledge reports within 5 business days, agree a disclosure date with you,
 
 - The spec text in `spec/`, including places where the spec claims a protection it does not deliver.
 - The JSON Schema in `schemas/`.
-- `@cubitrek/agent-passport-verifier` and its `agent-passport` CLI.
+- `@cubitrek/agent-passport` and its `agent-passport` CLI.
 
 A specific company's deployment (its passport, DNS records or keys) is out of scope here. Report those to the issuer through `issuer.contact` in their passport.
 

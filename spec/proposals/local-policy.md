@@ -1,6 +1,6 @@
 # Proposal: local policy, counted ceilings, and receipts
 
-Status: implemented in `@cubitrek/agent-passport-verifier` 0.1.2. Not part of
+Status: implemented in `@cubitrek/agent-passport` 0.1.2. Not part of
 the v0.1 passport format. Nothing here changes what a passport says or how it
 is verified.
 
@@ -102,7 +102,7 @@ The in-process ledger and nonce store are for one process. A fleet needs a
 shared store whose reserve step is a single atomic operation, such as a Redis
 transaction or a database row lock. The interfaces are small on purpose.
 
-The on-disk ledger lives behind the `@cubitrek/agent-passport-verifier/node`
+The on-disk ledger lives behind the `@cubitrek/agent-passport/node`
 subpath rather than the main entry, because it needs `node:fs` and the rest of
 the package deliberately runs unchanged in Workers and browsers.
 

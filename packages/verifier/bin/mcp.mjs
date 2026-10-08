@@ -2,7 +2,7 @@
  * Agent Passport MCP server over stdio. Zero dependencies: newline-delimited
  * JSON-RPC 2.0 per the MCP stdio transport, exposing four tools.
  *
- *   claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport-verifier agent-passport mcp
+ *   claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport agent-passport mcp
  */
 
 import { createInterface } from "node:readline";

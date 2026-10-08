@@ -1,6 +1,6 @@
 # Agent Passport, v0.1
 
-> A standard for verifiable, business-issued identity and authority for AI agents that talk to other AI agents across organisational boundaries.
+> A standard for the signed statement a business publishes about what its AI agents are authorised to commit to when they deal with other organisations.
 
 **Status:** Draft v0.1
 **Date:** 2026-04-28
@@ -24,6 +24,8 @@ Two AI agents from two different businesses are about to negotiate. Acme's procu
 The Model Context Protocol (MCP) standardised agent-to-tool calls. The Agent2Agent (A2A) protocol, now governed by the Linux Foundation, standardised agent-to-agent transport and capability discovery. Neither answers the commercial questions above. Without that layer, B2B agent communication remains an anonymous side channel that no compliance team will sign off on.
 
 **Agent Passport** fills that gap. It is a JSON document a business publishes at a well-known URL on its own domain, signed with a key whose public half is anchored in DNS, that declares which agents represent the business, what those agents are authorised to do on its behalf, and how a counterparty can verify and audit them.
+
+It is a statement of authority, not of identity. Who is calling is established separately, for example with HTTP Message Signatures as profiled by the IETF Web Bot Auth working group, and the passport is then read for what that caller's business has committed to (§7, caller binding).
 
 ## 2. Design goals
 
@@ -235,7 +237,7 @@ A v0.1-conformant **library** must expose at minimum:
 - `validate(passportJson) -> { ok, errors }`: schema-only.
 - `verify({ domain | passportJson, resolveSignerPublicKey }) -> { ok, errors, passport }`: end-to-end.
 
-The reference implementation is [`@cubitrek/agent-passport-verifier`](../packages/verifier).
+The reference implementation is [`@cubitrek/agent-passport`](../packages/verifier).
 
 ## 10. Open questions for v0.2
 

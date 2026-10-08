@@ -3,7 +3,7 @@
  *
  * The main entry deliberately touches no Node built-in, so the library keeps
  * running in Workers and browsers. Anything that reaches the file system lives
- * here instead, behind the "@cubitrek/agent-passport-verifier/node" subpath.
+ * here instead, behind the "@cubitrek/agent-passport/node" subpath.
  */
 
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";

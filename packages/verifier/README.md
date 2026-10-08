@@ -1,17 +1,18 @@
-# @cubitrek/agent-passport-verifier
+# @cubitrek/agent-passport
 
-Library, CLI and MCP server for the [Agent Passport spec, v0.1](https://github.com/Cubitrek/agent-passport/blob/main/spec/agent-passport-v0.1.md).
+Library, CLI, Passport Guard and MCP server for the [Agent Passport spec, v0.1](https://github.com/Cubitrek/agent-passport/blob/main/spec/agent-passport-v0.1.md).
 
 - **Verify** a passport: schema, the signing key inside the issuer's own DNS zone, the Ed25519 signature, the validity window and the revocation list.
 - **Authorize** one request against it: allow, escalate to the issuer's human, or deny.
+- **Guard** your own agents (Passport Guard): `agent-passport guard` proxies an MCP server and `agent-passport hook` sits in Claude Code; both decide every tool call against a local policy, count spend, hold for a signed approval and write receipts.
 - **Issue and renew** passports without hand-editing JSON.
 - **Health-check** a published passport, with a fix for every problem.
 - **Connect AI assistants** through a four-tool MCP server.
 
-The library is pure ESM and runs in Node 20+, Cloudflare Workers and modern browsers. The CLI and MCP server need Node, as does the `@cubitrek/agent-passport-verifier/node` subpath, which is where anything touching the file system lives so the main entry stays portable.
+The library is pure ESM and runs in Node 20+, Cloudflare Workers and modern browsers. The CLI and MCP server need Node, as does the `@cubitrek/agent-passport/node` subpath, which is where anything touching the file system lives so the main entry stays portable.
 
 ```bash
-npm install @cubitrek/agent-passport-verifier
+npm install @cubitrek/agent-passport
 ```
 
 > **Not on npm yet.** 0.1.2 publishes when the release workflow runs. Until then, clone this repository and run `npm install && npm run build` in `packages/verifier`, and call the CLI as `node packages/verifier/bin/agent-passport.mjs`.
@@ -41,7 +42,7 @@ npm install @cubitrek/agent-passport-verifier
 ## Verify, then authorize
 
 ```typescript
-import { authorize, guardedCall, memoryNonceStore, verifyAgentPassport } from "@cubitrek/agent-passport-verifier";
+import { authorize, guardedCall, memoryNonceStore, verifyAgentPassport } from "@cubitrek/agent-passport";
 
 const verification = await verifyAgentPassport({ domain: "acme.example" });
 
@@ -77,7 +78,7 @@ The binding is unsigned, so it protects where the component that decides and the
 `decide()` is the engine, and it takes an `Authority`: the envelope of scopes, ceilings, human threshold, counterparty rules and compliance, plus the subject it applies to. `authorize()` is `decide()` with `passportAuthority()` in front of it.
 
 ```typescript
-import { decide, intersect, localPolicy, passportAuthority } from "@cubitrek/agent-passport-verifier";
+import { decide, intersect, localPolicy, passportAuthority } from "@cubitrek/agent-passport";
 
 const mine = localPolicy({
   id: "treasury-local",
@@ -101,8 +102,8 @@ await decide(intersect(passportAuthority(verification), mine), request, { ledger
 A ceiling nothing counts is a statement of intent. A `SpendLedger` records what a subject has committed, over one engagement, a UTC day, a UTC month or all time.
 
 ```typescript
-import { memorySpendLedger } from "@cubitrek/agent-passport-verifier";
-import { fileSpendLedger } from "@cubitrek/agent-passport-verifier/node";
+import { memorySpendLedger } from "@cubitrek/agent-passport";
+import { fileSpendLedger } from "@cubitrek/agent-passport/node";
 
 const ledger = fileSpendLedger(".agent-passport/spend.jsonl");
 const decision = await decide(mine, request, { ledger, engagementId: "inv-2291" });
@@ -148,7 +149,7 @@ await verifyAgentPassport({ domain: "acme.example", revocationFailure: "error" }
 A passport says what a company authorised. It does not say who is contacting you, because anyone can quote a public file. When the issuer publishes request keys in its passport, verify the request itself:
 
 ```typescript
-import { signAgentRequest, verifyAgentCaller } from "@cubitrek/agent-passport-verifier";
+import { signAgentRequest, verifyAgentCaller } from "@cubitrek/agent-passport";
 
 // The agent, calling out:
 const headers = await signAgentRequest({ method: "POST", url, body }, { keyId, privateKey });
@@ -162,7 +163,7 @@ The signature is a standard HTTP Message Signature (RFC 9421) covering the metho
 ## Issue a passport from code
 
 ```typescript
-import { draftAgentPassport, signAgentPassport, dnsTxtRecord } from "@cubitrek/agent-passport-verifier";
+import { draftAgentPassport, signAgentPassport, dnsTxtRecord } from "@cubitrek/agent-passport";
 
 const draft = draftAgentPassport({
   domain: "acme.example",
@@ -183,7 +184,7 @@ const record = dnsTxtRecord({ keyId: draft.signature.keyId, publicKeyRaw }); // 
 ## Health-check a published passport
 
 ```typescript
-import { diagnoseAgentPassport } from "@cubitrek/agent-passport-verifier";
+import { diagnoseAgentPassport } from "@cubitrek/agent-passport";
 
 const report = await diagnoseAgentPassport({ domain: "acme.example", warnDays: 14 });
 for (const check of report.checks) {
@@ -196,7 +197,7 @@ Checks: delivery without redirects, content type, CORS, cache lifetimes, schema,
 ## MCP server
 
 ```bash
-claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport-verifier agent-passport mcp
+claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport agent-passport mcp
 ```
 
 | Tool | What it does |
@@ -222,7 +223,7 @@ Speaks MCP protocol versions 2024-11-05 through 2025-11-25 over stdio, with no d
 | `checkAndHold(decision, finalRequest, options?)` | The same gate in two steps: `{ ok: true, hold }` or `{ ok: false, reasons, receipt }` |
 | `checkExecution(decision, finalRequest, options?)` | The binding check alone: `{ ok: true }` or `{ ok: false, errors }` |
 | `memorySpendLedger()` | A `SpendLedger` for one process; a fleet needs a shared store with an atomic reserve |
-| `fileSpendLedger(path)` | An append-only `SpendLedger` on disk. From `@cubitrek/agent-passport-verifier/node`, because it needs `node:fs` |
+| `fileSpendLedger(path)` | An append-only `SpendLedger` on disk. From `@cubitrek/agent-passport/node`, because it needs `node:fs` |
 | `fileReceiptSink(path)`, `readReceipts(path)` | The receipt trail on disk, also from the `/node` subpath |
 | `toolRequest(call, rules)`, `ruleFor`, `describeRule` | Turning a tool call into a request the decision engine can answer |
 | `buildReceipt`, `signReceipt`, `verifyReceipt` | Receipts, and their Ed25519 signatures |
