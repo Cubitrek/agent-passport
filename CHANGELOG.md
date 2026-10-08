@@ -15,6 +15,10 @@ Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport-verifier`.
 - A malformed `signature.value` now returns `signature.invalid` instead of throwing.
 - Passport fetches no longer follow redirects (`fetch.redirect`), are capped at 256 KB (`fetch.too-large`), and every network call times out after 10 seconds by default (`timeoutMs`).
 
+### Fixed
+
+- **The guard counted a call that had not run.** A server on MCP 2026-07-28 may answer `tools/call` with `resultType: "input_required"` instead of acting; the client then retries the same call under a new id, carrying `inputResponses`. The guard treated that answer as a success: it committed the reserved amount and marked any approval as used, then did both again on the retry. Now the hold is handed back with the reason `execution.input-required`, the approval stays good, and the retry is decided on its own. Refusals also carry `resultType: "complete"` when the request named a protocol revision in `_meta`, so a 2026-07-28 client gets the shape it expects and an older one sees no change.
+
 ### Added
 
 - `signAgentPassport()` and `dnsTxtRecord()` for issuers, and an `agent-passport` CLI.
