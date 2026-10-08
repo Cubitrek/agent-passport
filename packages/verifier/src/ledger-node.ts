@@ -5,7 +5,7 @@
  * of the package deliberately runs unchanged in Workers and browsers. Reach
  * it through the subpath:
  *
- *   import { fileSpendLedger } from "@cubitrek/agent-passport-verifier/node";
+ *   import { fileSpendLedger } from "@cubitrek/agent-passport/node";
  */
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

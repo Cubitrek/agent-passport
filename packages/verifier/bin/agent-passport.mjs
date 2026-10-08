@@ -155,8 +155,9 @@ next decision more cautious, while not counting spend that did raises the cap.`,
   guard: `agent-passport guard --policy <policy.json> --ledger <spend.jsonl>
     [--receipts <receipts.jsonl>] [--engagement <id>] -- <command to run>
 
-Runs an MCP server behind your policy. Every tools/call is decided first, and a
-call the policy refuses is never sent on, so the agent cannot go around it.
+Passport Guard. Runs an MCP server behind your policy. Every tools/call is
+decided first, and a call the policy refuses is never sent on, so the agent
+cannot go around it.
 
   claude mcp add stripe -- agent-passport guard \\
     --policy ~/.agent-passport/treasury.json --ledger ~/.agent-passport/spend.jsonl \\
@@ -272,7 +273,7 @@ happened, which tool, how much, and why.`,
   mcp: `agent-passport mcp [--policy <policy.json>] [--ledger <spend.jsonl>]
 
 Speaks MCP over stdio. To add it to Claude Code:
-  claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport-verifier agent-passport mcp
+  claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport agent-passport mcp
 
 With --policy, every authorize_agent_action call is decided against that policy
 as well as against any counterparty passport, and the tighter of the two binds.

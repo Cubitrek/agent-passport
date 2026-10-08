@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes @cubitrek/agent-passport-verifier when a tag like verifier-v0.1.2 is pushed.
+# Publishes @cubitrek/agent-passport when a tag like verifier-v0.1.2 is pushed.
 # Needs the NPM_TOKEN repository secret (an npm automation token with publish rights on @cubitrek).
 
 on:

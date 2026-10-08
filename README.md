@@ -1,8 +1,12 @@
 # Agent Passport
 
-> A standard for verifiable, business-issued identity and authority for AI agents that talk to other AI agents across organisational boundaries.
+> Agent Passport is how a business states what its AI agents may commit, and proves it enforced that statement.
 
-A business publishes one signed JSON file at `/.well-known/agent-passport.json`. It tells another business's agent **who** the agent acts for, **what it may do**, **how much it can commit**, **when a human takes over**, and **where the audit trail lives**. The signing key sits in the business's own DNS, so anyone can check a passport without asking Cubitrek or any other third party. It is the trust and authority layer that sits on top of MCP and A2A.
+The **passport** is the public statement: one signed JSON file at `/.well-known/agent-passport.json` that tells another business's agent **who** the agent acts for, **what it may do**, **how much it can commit**, **when a human takes over**, and **where the audit trail lives**. The signing key sits in the business's own DNS, so anyone can check it without asking Cubitrek or any other third party.
+
+**Passport Guard** is the enforcement: the same decision engine, run against a local policy inside your own agents. It decides every tool call before it runs, counts spend against the ceilings, holds anything that needs a person until someone named signs off, and leaves signed **receipts** that say what happened without carrying the payload.
+
+Who is calling is a separate question, answered by caller binding such as the IETF's [Web Bot Auth](https://datatracker.ietf.org/wg/webbotauth/about/) work; a passport composes with it. It sits beside MCP and A2A rather than above them.
 
 - **Canonical spec:** [`spec/agent-passport-v0.1.md`](./spec/agent-passport-v0.1.md) (draft v0.1, 2026-04-28), with a [threat model](./spec/threat-model.md)
 - **Authored by:** [Cubitrek](https://cubitrek.com)
@@ -14,18 +18,18 @@ A business publishes one signed JSON file at `/.well-known/agent-passport.json`.
 | --- | --- |
 | Running an agent that deals with other companies | [Issue a passport](#issue-a-passport-for-your-agent) |
 | Receiving agent traffic: an API, an MCP server, a sales or procurement flow | [Decide what an inbound agent may do](#decide-what-an-inbound-agent-may-do) |
-| Running your own agent and wanting limits on it | [Set limits on your own agent](#set-limits-on-your-own-agent) |
+| Running your own agent and wanting limits on it | [Passport Guard: set limits on your own agent](#passport-guard-set-limits-on-your-own-agent) |
 | Using Claude, Cursor or another MCP client | [Give your AI assistant the tools](#give-your-ai-assistant-the-tools) |
 | Responsible for a published passport | [Keep it healthy](#keep-it-healthy) |
 
-The commands below use `npx`. After `npm install -g @cubitrek/agent-passport-verifier` you can type `agent-passport` directly.
+The commands below use `npx`. After `npm install -g @cubitrek/agent-passport` you can type `agent-passport` directly.
 
 > **Not on npm yet.** 0.1.2 publishes when the release workflow runs. Until then, clone this repository and run `npm install && npm run build` in `packages/verifier`, and call the CLI as `node packages/verifier/bin/agent-passport.mjs`.
 
 ## Issue a passport for your agent
 
 ```bash
-npx -p @cubitrek/agent-passport-verifier agent-passport init
+npx -p @cubitrek/agent-passport agent-passport init
 ```
 
 `init` asks about your company and your agent: domain, legal name, what the agent does, where counterparties reach it, what it may do, how much it may commit, and who takes over. It then writes:
@@ -37,13 +41,13 @@ npx -p @cubitrek/agent-passport-verifier agent-passport init
 It finishes by printing the one DNS TXT record to add. Upload the two files so they are served from your domain's `/.well-known/`, add the record, then check the result the way a counterparty will:
 
 ```bash
-npx -p @cubitrek/agent-passport-verifier agent-passport doctor yourdomain.example
+npx -p @cubitrek/agent-passport agent-passport doctor yourdomain.example
 ```
 
 Every question has a flag, so `init` also runs unattended in scripts and CI (`agent-passport help init`). Before the passport expires, re-issue it:
 
 ```bash
-npx -p @cubitrek/agent-passport-verifier agent-passport renew .well-known/agent-passport.json --key ~/.agent-passport/keys/yourdomain-2026-q3.pem
+npx -p @cubitrek/agent-passport agent-passport renew .well-known/agent-passport.json --key ~/.agent-passport/keys/yourdomain-2026-q3.pem
 ```
 
 `renew` also confirms your DNS record still carries the key.
@@ -51,11 +55,11 @@ npx -p @cubitrek/agent-passport-verifier agent-passport renew .well-known/agent-
 ## Decide what an inbound agent may do
 
 ```bash
-npm install @cubitrek/agent-passport-verifier
+npm install @cubitrek/agent-passport
 ```
 
 ```typescript
-import { authorize, checkExecution, verifyAgentPassport } from "@cubitrek/agent-passport-verifier";
+import { authorize, checkExecution, verifyAgentPassport } from "@cubitrek/agent-passport";
 
 const verification = await verifyAgentPassport({ domain: "acme.example" });
 const decision = await authorize(verification, {
@@ -83,7 +87,7 @@ switch (decision.decision) {
 Each decision is also bound to the exact request, including the concrete tool, target and arguments, and expires after 60 seconds (or the issuer's response window for an escalation). Whatever performs the side effect goes through the guard, with the final values:
 
 ```typescript
-import { guardedCall } from "@cubitrek/agent-passport-verifier";
+import { guardedCall } from "@cubitrek/agent-passport";
 
 const result = await guardedCall(decision, finalRequest, () => provider.transfer(finalRequest), {
   ledger,
@@ -100,7 +104,7 @@ It refuses if the target or arguments changed, the decision expired, it was a de
 A passport is public, so verifying one proves what the issuer authorised, not who is contacting you. When the issuer publishes request-signing keys in its passport, check the signature on the request itself:
 
 ```typescript
-import { verifyAgentCaller } from "@cubitrek/agent-passport-verifier";
+import { verifyAgentCaller } from "@cubitrek/agent-passport";
 
 const caller = await verifyAgentCaller(request, verification.passport, { nonceStore });
 if (!caller.ok) return reject(caller.errors);
@@ -109,7 +113,7 @@ if (!caller.ok) return reject(caller.errors);
 That verifies a standard HTTP Message Signature (RFC 9421) over the method, host, path, query and body against the keys the passport publishes, and refuses one that is stale, replayed, made with an unpublished key, or that leaves part of the request uncovered. On the agent side, one call signs the request:
 
 ```typescript
-import { signAgentRequest } from "@cubitrek/agent-passport-verifier";
+import { signAgentRequest } from "@cubitrek/agent-passport";
 
 const headers = await signAgentRequest({ method: "POST", url, body }, { keyId, privateKey });
 ```
@@ -119,14 +123,14 @@ Issuers create the key with `agent-passport init --request-key`, or add one to a
 From a shell or a script:
 
 ```bash
-npx -p @cubitrek/agent-passport-verifier agent-passport authorize acme.example --scope procurement.purchase --amount 42000
+npx -p @cubitrek/agent-passport agent-passport authorize acme.example --scope procurement.purchase --amount 42000
 ```
 
 It exits 0 for allow, 2 for escalate and 1 for deny. Add `--json` for the full decision.
 
 Without one of those bindings, a valid passport still only proves what the issuer authorised, not who is calling; see spec §7, "What verification proves".
 
-## Set limits on your own agent
+## Passport Guard: set limits on your own agent
 
 The same envelope works with no counterparty in sight, and this half needs nobody else to adopt anything.
 
@@ -135,7 +139,7 @@ The same envelope works with no counterparty in sight, and this half needs nobod
 `guard` runs an MCP server behind your policy. Every tool call is decided first, and a call the policy refuses is never forwarded, so the agent cannot go around it:
 
 ```bash
-claude mcp add stripe -- npx -p @cubitrek/agent-passport-verifier agent-passport guard \
+claude mcp add stripe -- npx -p @cubitrek/agent-passport agent-passport guard \
   --policy ~/.agent-passport/treasury.json \
   --ledger ~/.agent-passport/spend.jsonl \
   --receipts ~/.agent-passport/receipts.jsonl \
@@ -162,6 +166,8 @@ The policy needs a `tools` list, because only you know that `stripe.create_charg
 ```
 
 A 9,000 USD charge against that policy comes back to the agent as a refusal naming the cap, and the Stripe server never hears about it. A tool no rule covers is escalated rather than waved through, and a rule whose `amountFrom` finds no number is refused, because a call whose value cannot be read cannot be held to a limit.
+
+Money is held when a call is decided and counted only once the server says it acted. A server error hands the amount back, and so does a server that asks the client for more input before acting (MCP 2026-07-28, `input_required`): the retry is a call of its own and is decided afresh.
 
 The guard also annotates the tool list, so the model knows the rules before it tries. A worked policy with every field explained is in [`examples/policies`](./examples/policies).
 
@@ -234,7 +240,7 @@ Worth being blunt about who may answer: an agent that can run a shell can run `a
 ### See what it has been doing
 
 ```bash
-npx -p @cubitrek/agent-passport-verifier agent-passport log --receipts ~/.agent-passport/receipts.jsonl
+npx -p @cubitrek/agent-passport agent-passport log --receipts ~/.agent-passport/receipts.jsonl
 ```
 
 ```
@@ -261,7 +267,7 @@ Write the rules down and the decision engine applies them exactly as it applies 
 ```
 
 ```bash
-npx -p @cubitrek/agent-passport-verifier agent-passport authorize \
+npx -p @cubitrek/agent-passport agent-passport authorize \
   --policy treasury.json --ledger spend.jsonl \
   --scope payments.transfer --amount 400 --tool payments.create_transfer
 ```
@@ -269,7 +275,7 @@ npx -p @cubitrek/agent-passport-verifier agent-passport authorize \
 `--ledger` keeps the running total, so a cap over a day, a month or a whole engagement is counted rather than merely published. An allow holds its amount until you close it out:
 
 ```bash
-npx -p @cubitrek/agent-passport-verifier agent-passport settle <nonce> --ledger spend.jsonl --commit
+npx -p @cubitrek/agent-passport agent-passport settle <nonce> --ledger spend.jsonl --commit
 ```
 
 A hold that is never settled lapses when the decision expires, so a crashed run frees its own headroom. Without a ledger, a cap wider than a single engagement escalates instead of passing unchecked: nothing is counting it, so it is a question for a person rather than a quiet yes.
@@ -277,7 +283,7 @@ A hold that is never settled lapses when the decision expires, so a crashed run 
 Pass a domain **and** a policy to run both at once. Scopes intersect, every ceiling is enforced, and the lower human threshold wins, so what a counterparty published is a maximum it will be held to, never permission to exceed your own rules:
 
 ```bash
-npx -p @cubitrek/agent-passport-verifier agent-passport authorize acme.example \
+npx -p @cubitrek/agent-passport agent-passport authorize acme.example \
   --policy treasury.json --scope payments.transfer --amount 5000
 ```
 
@@ -294,7 +300,7 @@ A receipt carries no payload. The tool name, the scope and the amount are in it;
 Claude Code:
 
 ```bash
-claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport-verifier agent-passport mcp
+claude mcp add agent-passport -- npx -y -p @cubitrek/agent-passport agent-passport mcp
 ```
 
 Claude Desktop, Cursor and other MCP clients:
@@ -304,7 +310,7 @@ Claude Desktop, Cursor and other MCP clients:
   "mcpServers": {
     "agent-passport": {
       "command": "npx",
-      "args": ["-y", "-p", "@cubitrek/agent-passport-verifier", "agent-passport", "mcp"]
+      "args": ["-y", "-p", "@cubitrek/agent-passport", "agent-passport", "mcp"]
     }
   }
 }
@@ -362,7 +368,7 @@ agent-passport/
     execution-boundary/          # Harness: one action, many executions, three authorities
     end-to-end/                  # Two companies, one purchase, the whole chain in one run
   packages/
-    verifier/                    # @cubitrek/agent-passport-verifier: library, CLI, MCP server
+    verifier/                    # @cubitrek/agent-passport: library, CLI, MCP server
   action.yml                     # GitHub Action: scheduled health check
 ```
 
@@ -385,6 +391,10 @@ OAuth authenticates a caller against one provider that issued the token. A passp
 ### How is this different from an A2A Agent Card?
 
 An Agent Card answers "what can this agent do". A passport answers "what is this agent authorised to commit to on behalf of which business, and who takes over when it should not decide alone". Agent Passport is additive to A2A and MCP, not a replacement for either.
+
+### Is this the same as Trulioo's Digital Agent Passport, or the Open Agent Passport?
+
+No. Those are a merchant-facing know-your-agent credential and a tool-call authorization gate. An Agent Passport is the statement a business publishes about its own agents, under its own domain, and Passport Guard is this project's gate. The differences are set out under [Not to be confused with](#not-to-be-confused-with).
 
 ### What stops someone forging a passport?
 
@@ -423,13 +433,23 @@ Agent Passport is **additive**. It does not replace anything.
 | Agent-to-tool, same org | Model Context Protocol (MCP) |
 | Agent-to-agent transport | Agent2Agent (A2A) Agent Card |
 | Capability manifest | `agents.json` (Wildcard), A2A skills |
-| **Identity, authority, audit, escalation** | **Agent Passport (this spec)** |
+| Caller identity over HTTP | Web Bot Auth (IETF), HTTP Message Signatures |
+| **Authority, audit, escalation** | **Agent Passport (this spec)** |
 
 - **A2A `/.well-known/agent-card.json`** answers "what can this agent do." Agent Passport answers "what is this agent authorised to commit to on behalf of which business."
-- **MCP** is about a single agent-tool boundary. Agent Passport is about cross-organisational trust.
+- **MCP** is about a single agent-tool boundary. A passport is about what a business has committed to across organisations; Passport Guard sits at the MCP boundary and enforces it.
 - **OpenAPI** describes HTTP surface. Agent Passport describes commercial surface.
 - **Hosted agent registries and runtime guardrails** decide inside one platform. A published passport works across companies with no shared platform, and those products can read it as an input.
-- **W3C Verifiable Credentials** are a primitive Agent Passport can lean on for stronger identity proofs in v0.2.
+- **Web Bot Auth** (IETF) establishes who is calling, over HTTP Message Signatures, and leaves what the caller may do out of scope by charter. A passport is that other half, and composes with it.
+
+### Not to be confused with
+
+"Agent passport" is a generic phrase, and as of October 2026 at least three other projects use it. None of them is this one, and this one does not set out to replace them.
+
+- [Trulioo Digital Agent Passport](https://www.businesswire.com/news/home/20250814588043/en) is a know-your-agent credential, issued through Trulioo, that tells a merchant inside a payment flow who built an agent and that the user consented. An Agent Passport is published by the business the agent acts for, under that business's own domain, with no issuer in between.
+- [Open Agent Passport (APort)](https://github.com/aporthq/aport-spec) is a pre-action authorization gate with its own passport, decision and proof schemas. That is the same layer as Passport Guard. It has no statement a business publishes for counterparties to read.
+- [`@scopeblind/passport`](https://www.npmjs.com/package/@scopeblind/passport) is an agent-side identity and manifest signer beside `protect-mcp`, a Cedar policy gate with signed receipts. Same layer as Passport Guard again. Its receipt format is the [Acta signed-receipts draft](https://datatracker.ietf.org/doc/draft-farley-acta-signed-receipts/), which this project intends to export to rather than compete with.
+- [`agents.txt`](https://github.com/kaylacar/agents-txt) and [`agent-permissions.json`](https://github.com/las-wg/agent-permissions.json) say what a website lets visiting agents do. A passport says what a business lets its own agents do elsewhere.
 
 ## Versioning
 

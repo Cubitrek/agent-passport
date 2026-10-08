@@ -60,12 +60,16 @@ export async function runGuard({
   const unmatched = policy.unmatched ?? "escalate";
   const limits = limitsSummary(authority);
 
-  const refuse = (id, lines) =>
-    send({
-      jsonrpc: "2.0",
-      id,
-      result: { content: [{ type: "text", text: lines.filter(Boolean).join("\n") }], isError: true },
-    });
+  /**
+   * Refuse a call in the shape the client expects. From MCP 2026-07-28 every
+   * request names its protocol revision in `_meta` and every result carries
+   * `resultType`; an older client has never seen the field, so it gets none.
+   */
+  const refuse = (message, lines) => {
+    const result = { content: [{ type: "text", text: lines.filter(Boolean).join("\n") }], isError: true };
+    if (message.params?._meta?.["io.modelcontextprotocol/protocolVersion"] !== undefined) result.resultType = "complete";
+    send({ jsonrpc: "2.0", id: message.id, result });
+  };
 
   async function guardCall(message) {
     const name = message.params?.name;
@@ -78,7 +82,7 @@ export async function runGuard({
         // The proxy has nobody to ask, so a rule wanting a person is a refusal
         // here, with the reason, rather than a prompt.
         log(`${name}: ${first.code}`);
-        return refuse(message.id, [
+        return refuse(message, [
           `Refused by the local policy: ${name}`,
           first.message,
           first.hint,
@@ -88,7 +92,7 @@ export async function runGuard({
       if (first.code === "tool.unmatched") {
         if (unmatched === "allow") return toUpstream(message);
         log(`${name}: no rule covers this tool, and unmatched is "${unmatched}"`);
-        return refuse(message.id, [
+        return refuse(message, [
           `Refused: no rule in the local policy covers "${name}".`,
           unmatched === "escalate"
             ? `A person has to decide whether this tool may be used${authority.humanInLoop ? ` (${authority.humanInLoop.escalation})` : ""}.`
@@ -96,7 +100,7 @@ export async function runGuard({
         ]);
       }
       log(`${name}: ${first.code}`);
-      return refuse(message.id, [`Refused: ${first.message}`, first.hint]);
+      return refuse(message, [`Refused: ${first.message}`, first.hint]);
     }
 
     const decision = await decide(authority, mapping.request, { ledger, engagementId });
@@ -119,7 +123,7 @@ export async function runGuard({
         const pending = waiting?.request ?? buildApprovalRequest(decision, mapping.request);
         if (!waiting) approvals.ask(pending);
         log(`${name}: waiting for an answer, request ${pending.id}`);
-        return refuse(message.id, [
+        return refuse(message, [
           `Waiting for a person: ${name}`,
           ...decision.reasons.map((r) => r.message),
           ...found.errors.filter((e) => e.code !== "approval.none").map((e) => e.message),
@@ -141,7 +145,7 @@ export async function runGuard({
     if (!gate.ok) {
       const why = decision.reasons.map((r) => `${r.code}: ${r.message}${r.hint ? ` (${r.hint})` : ""}`);
       log(`${name}: ${decision.decision}, ${decision.reasons.map((r) => r.code).join(", ")}`);
-      return refuse(message.id, [
+      return refuse(message, [
         `Refused by the local policy: ${name}`,
         ...why,
         decision.escalation
@@ -194,7 +198,7 @@ export async function runGuard({
           // One call the guard could not work out must not take the guard down
           // with it, and must not be forwarded either. Refuse it and carry on.
           log(`${message.params?.name}: ${err?.message ?? err}`);
-          refuse(message.id, [
+          refuse(message, [
             `Refused: the guard could not decide this call.`,
             String(err?.message ?? err),
             "This call was not sent to the server.",
@@ -225,9 +229,26 @@ export async function runGuard({
         // the held amount goes back. A connection that dies instead is handled
         // on exit, where the outcome is genuinely unknown.
         const refused = message.error !== undefined || message.result?.isError === true;
-        await (refused ? owed.hold.release() : owed.hold.commit());
+        // A server on MCP 2026-07-28 may instead ask for more input before
+        // acting (resultType "input_required"). Nothing ran. The client will
+        // retry the same call under a new id and that retry is decided on its
+        // own, so the held amount goes back now rather than being counted twice.
+        const deferred = !refused && message.result?.resultType === "input_required";
+        if (refused) {
+          await owed.hold.release();
+        } else if (deferred) {
+          log(`${owed.name}: the server asked for more input first, so the call has not run`);
+          await owed.hold.release([
+            {
+              code: "execution.input-required",
+              message: "The server asked for more input before acting, so this call did not run. The retry is decided on its own.",
+            },
+          ]);
+        } else {
+          await owed.hold.commit();
+        }
         // An approval buys one call. Spend it only when the call actually ran.
-        if (owed.approved && !refused && approvals) {
+        if (owed.approved && !refused && !deferred && approvals) {
           approvals.answer({
             context: owed.approved.context,
             kind: "answer",

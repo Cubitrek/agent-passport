@@ -1,6 +1,6 @@
 # Changelog
 
-Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport-verifier`.
+Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport`.
 
 ## 0.1.2 (unreleased)
 
@@ -14,6 +14,10 @@ Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport-verifier`.
 - **The verifier now rejects passports whose `issuer.signingKeyDns` is outside `issuer.domain`** (`issuer.signing-key-outside-domain`). Earlier versions fetched the key from whatever DNS name the passport gave. Anyone could write a passport naming any company as issuer, publish a key in a zone they control, sign it, and get `ok: true`. The spec already made domain ownership the root of trust (§2, threat model §1.1); §4.2 and §7 now state the requirement explicitly.
 - A malformed `signature.value` now returns `signature.invalid` instead of throwing.
 - Passport fetches no longer follow redirects (`fetch.redirect`), are capped at 256 KB (`fetch.too-large`), and every network call times out after 10 seconds by default (`timeoutMs`).
+
+### Fixed
+
+- **The guard counted a call that had not run.** A server on MCP 2026-07-28 may answer `tools/call` with `resultType: "input_required"` instead of acting; the client then retries the same call under a new id, carrying `inputResponses`. The guard treated that answer as a success: it committed the reserved amount and marked any approval as used, then did both again on the retry. Now the hold is handed back with the reason `execution.input-required`, the approval stays good, and the retry is decided on its own. Refusals also carry `resultType: "complete"` when the request named a protocol revision in `_meta`, so a 2026-07-28 client gets the shape it expects and an older one sees no change.
 
 ### Added
 
@@ -34,7 +38,7 @@ Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport-verifier`.
 - Tool rules. A policy's `tools` list maps tool names to scopes and says where the value lives (`amountFrom`, `amountUnit`, `targetFrom`), because nothing else can know that a charge of 800000 means 8,000 USD. The first matching rule wins, `*` is a wildcard, and `unmatched` decides what happens to a tool no rule covers (`escalate` by default, or `deny`, or `allow`). A rule that names `amountFrom` and finds no number there is refused rather than passed through unpriced. Rules are validated when the policy loads, so a rule naming a scope the policy does not grant fails at startup.
 - `guard` refuses to start when the policy sets a limit and no `--ledger` is given. Previously that combination refused every priced call at run time with a confusing reason.
 - `fileReceiptSink()` and `readReceipts()`, on the `/node` subpath, which is now `dist/node.js` and re-exports `fileSpendLedger`.
-- Local policy and counted ceilings. Authority is now separate from where it came from: `decide()` takes an `Authority`, `passportAuthority()` reads one out of a verified passport, `localPolicy()` builds one from rules the operator wrote, and `intersect()` returns what both grant and nothing more. `authorize()` is `decide()` with a passport in front of it, unchanged for callers. A `SpendLedger` (`memorySpendLedger()`, and `fileSpendLedger()` from the new `@cubitrek/agent-passport-verifier/node` subpath, which keeps `node:fs` out of the main entry so the package still runs in Workers and browsers) counts what a subject has committed over an engagement, a UTC day, a UTC month or all time; an allow reserves its amount so two decisions taken before either executes cannot both spend it. A cap wider than one engagement with nothing counting it now escalates (`amount.cumulative-unknown`) rather than passing. The CLI gains `authorize --policy --ledger --engagement` and a `settle` command; `agent-passport mcp --policy` enforces the operator's policy on every decision, and nothing the model sends can widen it. See `spec/proposals/local-policy.md` and threat model §1.10, §1.11.
+- Local policy and counted ceilings. Authority is now separate from where it came from: `decide()` takes an `Authority`, `passportAuthority()` reads one out of a verified passport, `localPolicy()` builds one from rules the operator wrote, and `intersect()` returns what both grant and nothing more. `authorize()` is `decide()` with a passport in front of it, unchanged for callers. A `SpendLedger` (`memorySpendLedger()`, and `fileSpendLedger()` from the new `@cubitrek/agent-passport/node` subpath, which keeps `node:fs` out of the main entry so the package still runs in Workers and browsers) counts what a subject has committed over an engagement, a UTC day, a UTC month or all time; an allow reserves its amount so two decisions taken before either executes cannot both spend it. A cap wider than one engagement with nothing counting it now escalates (`amount.cumulative-unknown`) rather than passing. The CLI gains `authorize --policy --ledger --engagement` and a `settle` command; `agent-passport mcp --policy` enforces the operator's policy on every decision, and nothing the model sends can widen it. See `spec/proposals/local-policy.md` and threat model §1.10, §1.11.
 - The guard. `guardedCall()` is the one place a side effect happens: it checks the decision against the values about to be executed, settles the amount against the ledger, and writes a receipt either way. `checkAndHold()` is the same gate in two steps. An effect that throws is recorded as `unknown` and its reservation committed by default, because over-counting only makes the next decision more cautious.
 - Receipts. `buildReceipt()`, `signReceipt()` and `verifyReceipt()` produce a signed record of who acted, under which authority, what was decided and why, the binding digest, and what became of it. A receipt carries the tool name, the scope and the amount, and never the target or the arguments: the digest already covers those, so a receipt can be handed to an auditor without disclosing the call.
 - `execution.decision-altered`: a decision whose `agentId`, `issuerDomain` or `keyId` no longer matches the subject it was issued for. Previously this surfaced as `execution.request-changed`.
@@ -59,6 +63,8 @@ Covers the spec text, the JSON Schema, and `@cubitrek/agent-passport-verifier`.
 
 ### Changed
 
+- **The package is `@cubitrek/agent-passport`** (it was `@cubitrek/agent-passport-verifier`; neither name has been published yet). It carries the verifier, the signer, Passport Guard, the Claude Code hook and the approvals tooling, so a name that said only "verifier" misdescribed it. The `/node` subpath moves with it. The bare npm name `agent-passport` belongs to someone else.
+- **The project describes itself as a statement of authority, not of identity.** README and spec §1: who is calling is established separately (the IETF Web Bot Auth work over HTTP Message Signatures) and a passport is read for what that caller's business has committed to. The enforcement side has a name, Passport Guard, and the README says which other things called "agent passport" this is not.
 - Domain comparison ignores case and a trailing dot.
 - Canonical JSON, used for signing and for request digests, refuses values with no unambiguous JSON form (Dates, NaN, bigints) instead of writing them as `{}` or `null`.
 - Schema: `authority.decisionAudit` must contain `{engagementId}`, as the spec already required.

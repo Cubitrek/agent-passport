@@ -1,5 +1,5 @@
 {
-  "name": "@cubitrek/agent-passport-verifier",
+  "name": "@cubitrek/agent-passport",
   "version": "0.1.2",
   "description": "Reference verifier and issuer toolkit for the Agent Passport spec, v0.1. Validates schema, binds the Ed25519 signing key to the issuer's DNS zone, verifies the canonical-JSON signature, and checks expiry and revocation. Includes an agent-passport CLI for keygen, signing and verification.",
   "license": "MIT",
@@ -22,7 +22,14 @@
     "trust",
     "ed25519",
     "well-known",
-    "agentic"
+    "agentic",
+    "passport-guard",
+    "guardrails",
+    "spend-limits",
+    "human-in-the-loop",
+    "mcp-proxy",
+    "claude-code-hook",
+    "receipts"
   ],
   "type": "module",
   "main": "./dist/index.js",

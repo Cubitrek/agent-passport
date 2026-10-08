@@ -1,9 +1,9 @@
 /**
- * @cubitrek/agent-passport-verifier
+ * @cubitrek/agent-passport
  *
  * Reference verifier for the Agent Passport spec, v0.1.
  *
- *   import { verifyAgentPassport, validate } from "@cubitrek/agent-passport-verifier";
+ *   import { verifyAgentPassport, validate } from "@cubitrek/agent-passport";
  *
  *   const result = await verifyAgentPassport({
  *     domain: "acme.example",

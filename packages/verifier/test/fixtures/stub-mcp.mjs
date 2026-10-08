@@ -27,6 +27,19 @@ for await (const line of rl) {
     if (LOG) appendFileSync(LOG, `${JSON.stringify({ name: message.params.name, args: message.params.arguments })}\n`);
     if (message.params.name === "stripe.refund") {
       reply({ content: [{ type: "text", text: "refund failed at the provider" }], isError: true });
+    } else if (message.params.arguments?.ask === true && message.params.inputResponses === undefined) {
+      // MCP 2026-07-28: ask the client for more input instead of acting. The
+      // client retries the same call, under a new id, carrying inputResponses.
+      reply({
+        resultType: "input_required",
+        inputRequests: {
+          confirm: {
+            method: "elicitation/create",
+            params: { mode: "form", message: "Confirm?", requestedSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } },
+          },
+        },
+        requestState: "stub-state",
+      });
     } else {
       reply({ content: [{ type: "text", text: `did ${message.params.name}` }] });
     }

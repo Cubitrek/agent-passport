@@ -15,7 +15,7 @@
  *
  * This module stays free of Node built-ins so the package keeps running in
  * Workers and browsers. The on-disk ledger lives in ./ledger-node.ts, behind
- * the "@cubitrek/agent-passport-verifier/node" subpath.
+ * the "@cubitrek/agent-passport/node" subpath.
  */
 
 import type { AuthorityCeiling, SpendWindow } from "./authority.js";
